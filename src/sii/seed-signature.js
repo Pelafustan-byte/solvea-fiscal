@@ -50,6 +50,8 @@ export function verifySignedSeed(xml, certificatePem) {
     const verifier = new SignedXml({ publicCert: certificatePem, getCertFromKeyInfo: () => null });
     verifier.loadSignature(signatureNode);
     if (!verifier.checkSignature(String(xml))) return { valid: false, reason: 'cryptographic_verification_failed' };
+    const references = verifier.getReferences();
+    if (references.length !== 1 || references[0].uri !== '') return { valid: false, reason: 'seed_reference_must_be_empty_uri' };
     return { valid: true, reason: '' };
   } catch (error) {
     return { valid: false, reason: error.message || 'verification_exception' };
@@ -72,7 +74,8 @@ export function signSeedXml({ seed, credentials }) {
     xpath: "/*[local-name(.)='getToken']",
     transforms: [SEED_XMLDSIG.enveloped],
     digestAlgorithm: SEED_XMLDSIG.digest,
-    uri: ''
+    uri: '',
+    isEmptyUri: true
   });
   signer.computeSignature(source, {
     location: { reference: "/*[local-name(.)='getToken']", action: 'append' }
