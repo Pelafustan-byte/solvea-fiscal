@@ -46,9 +46,8 @@ function extractDocumentId(xml) {
   return match[1];
 }
 
-function wrapGeneratedFields(xml) {
+function wrapUnsignedKeyInfoFields(xml) {
   return String(xml)
-    .replace(/<SignatureValue>([\s\S]*?)<\/SignatureValue>/, (_full, value) => `<SignatureValue>${wrapBase64(value)}</SignatureValue>`)
     .replace(/<Modulus>([\s\S]*?)<\/Modulus>/, (_full, value) => `<Modulus>${wrapBase64(value)}</Modulus>`)
     .replace(/<X509Certificate>([\s\S]*?)<\/X509Certificate>/, (_full, value) => `<X509Certificate>${wrapBase64(value)}</X509Certificate>`);
 }
@@ -57,9 +56,9 @@ export function verifyDteSignature(xml, certificatePem, expectedDocumentId = '')
   try {
     const doc = new DOMParser().parseFromString(String(xml), 'text/xml');
     const parserErrors = xpath(doc, "//*[local-name(.)='parsererror']");
-    if (parserErrors.length) return { valid: false, signedReferences: [] };
+    if (parserErrors.length) return { valid: false, signedReferences: [], reason: 'xml_parse_error' };
     const signatureNode = xpath(doc, `//*[local-name(.)='Signature' and namespace-uri(.)='${XMLDSIG.namespace}']`)[0];
-    if (!signatureNode) return { valid: false, signedReferences: [] };
+    if (!signatureNode) return { valid: false, signedReferences: [], reason: 'signature_not_found' };
 
     const verifier = new SignedXml({
       publicCert: certificatePem,
@@ -67,16 +66,16 @@ export function verifyDteSignature(xml, certificatePem, expectedDocumentId = '')
     });
     verifier.loadSignature(signatureNode);
     const valid = verifier.checkSignature(String(xml));
-    if (!valid) return { valid: false, signedReferences: [] };
+    if (!valid) return { valid: false, signedReferences: [], reason: 'cryptographic_verification_failed' };
 
     const signedReferences = verifier.getSignedReferences().map((value) => String(value));
-    if (signedReferences.length !== 1) return { valid: false, signedReferences };
+    if (signedReferences.length !== 1) return { valid: false, signedReferences, reason: 'unexpected_reference_count' };
     if (expectedDocumentId && !signedReferences[0].includes(`ID="${expectedDocumentId}"`) && !signedReferences[0].includes(`ID='${expectedDocumentId}'`)) {
-      return { valid: false, signedReferences };
+      return { valid: false, signedReferences, reason: 'signed_reference_id_mismatch' };
     }
-    return { valid: true, signedReferences };
-  } catch {
-    return { valid: false, signedReferences: [] };
+    return { valid: true, signedReferences, reason: '' };
+  } catch (error) {
+    return { valid: false, signedReferences: [], reason: error.message || 'verification_exception' };
   }
 }
 
@@ -101,9 +100,11 @@ export function signDteXml({ xml, credentials }) {
     location: { reference: "//*[local-name(.)='Documento']", action: 'after' }
   });
 
-  const signedXml = wrapGeneratedFields(signer.getSignedXml());
+  const signedXml = wrapUnsignedKeyInfoFields(signer.getSignedXml());
   const verification = verifyDteSignature(signedXml, credentials.certificatePem, documentId);
-  if (!verification.valid) throw httpError(500, 'La firma XMLDSIG generada no superó la verificación interna.');
+  if (!verification.valid) {
+    throw httpError(500, `La firma XMLDSIG generada no superó la verificación interna: ${verification.reason}.`);
+  }
 
   const signatureMatch = signedXml.match(/<SignatureValue>([\s\S]*?)<\/SignatureValue>/);
   const digestMatch = signedXml.match(/<DigestValue>([\s\S]*?)<\/DigestValue>/);
