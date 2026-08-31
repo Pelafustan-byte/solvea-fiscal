@@ -1,4 +1,5 @@
 import { authBaseUrlForMode } from './sii/auth-client.js';
+import { boletaBaseUrlForMode } from './sii/boleta-client.js';
 
 const text = (value) => String(value ?? '').trim();
 const bool = (value, fallback = false) => value == null || value === '' ? fallback : ['1', 'true', 'yes', 'on'].includes(String(value).toLowerCase());
@@ -18,7 +19,12 @@ export function loadConfig(env = process.env) {
     sii: {
       networkEnabled: bool(env.SII_NETWORK_ENABLED, false),
       authBaseUrl: text(env.SII_AUTH_BASE_URL) || authBaseUrlForMode(mode),
-      timeoutMs: Math.max(1000, Number(env.SII_HTTP_TIMEOUT_MS || 15000))
+      boletaBaseUrl: text(env.SII_BOLETA_BASE_URL) || boletaBaseUrlForMode(mode),
+      timeoutMs: Math.max(1000, Number(env.SII_HTTP_TIMEOUT_MS || 15000)),
+      senderRut: text(env.SII_RUT_ENVIA),
+      receiverRut: text(env.SII_RUT_RECEPTOR || '60803000-K'),
+      resolutionDate: text(env.SII_FCH_RESOL),
+      resolutionNumber: text(env.SII_NRO_RESOL)
     },
     issuer: {
       rut: text(env.SII_RUT_EMISOR),
@@ -47,15 +53,22 @@ export function readiness(config) {
   if (!config.credentials.certificatePfxBase64) credentialMissing.push('certificate');
   if (!config.credentials.caf39Base64) credentialMissing.push('caf39');
   if (config.mode === 'certification' && !config.stateDir) credentialMissing.push('stateDir');
+  const submissionMissing = [];
+  if (!config.sii?.senderRut) submissionMissing.push('sii.senderRut');
+  if (!config.sii?.resolutionDate) submissionMissing.push('sii.resolutionDate');
+  if (config.sii?.resolutionNumber === '') submissionMissing.push('sii.resolutionNumber');
 
   const configurationReady = issuerMissing.length === 0 && credentialMissing.length === 0;
+  const submissionReady = configurationReady && submissionMissing.length === 0;
   return {
     mode: config.mode,
     productionReady: false,
     configurationReady,
+    submissionReady,
     statePersistence: config.stateDir ? 'file' : 'memory',
     siiNetworkEnabled: Boolean(config.sii?.networkEnabled),
     siiAuthBaseUrl: config.sii?.authBaseUrl || '',
+    siiBoletaBaseUrl: config.sii?.boletaBaseUrl || '',
     capabilities: {
       cafParsing: true,
       cafKeyPairVerification: true,
@@ -67,15 +80,17 @@ export function readiness(config) {
       dteXmlSignatureVerification: true,
       siiSeedSignature: true,
       siiAuthenticationClient: true,
-      siiAuthenticationLive: Boolean(config.sii?.networkEnabled && config.credentials.certificatePfxBase64),
-      siiSubmission: false,
-      siiStatusTracking: false
+      envioBoletaEnvelope: true,
+      envioBoletaSignature: true,
+      siiSubmissionClient: true,
+      siiStatusTrackingClient: true,
+      siiLiveFlow: Boolean(config.sii?.networkEnabled && submissionReady)
     },
-    missing: [...issuerMissing, ...credentialMissing],
+    missing: [...issuerMissing, ...credentialMissing, ...submissionMissing],
     blockers: [
       'verificación de la firma del SII sobre el CAF con llave pública oficial',
       ...(config.sii?.networkEnabled ? [] : ['habilitar red SII explícitamente para pruebas de certificación']),
-      'envío de boletas y seguimiento de Track ID',
+      'persistencia durable de Track ID y worker de reintentos',
       'almacenamiento transaccional multi-instancia para producción',
       'Resumen de Ventas Diarias / consumo de folios',
       'certificación del contribuyente ante el SII'
