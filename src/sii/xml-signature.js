@@ -2,7 +2,8 @@ import { createRequire } from 'node:module';
 import { escapeXml } from '../lib/xml.js';
 
 const require = createRequire(import.meta.url);
-const { SignedXml, xpath } = require('xml-crypto');
+const { SignedXml } = require('xml-crypto');
+const xpath = require('xpath');
 const { DOMParser } = require('@xmldom/xmldom');
 
 export const XMLDSIG = Object.freeze({
@@ -55,9 +56,9 @@ function wrapUnsignedKeyInfoFields(xml) {
 export function verifyDteSignature(xml, certificatePem, expectedDocumentId = '') {
   try {
     const doc = new DOMParser().parseFromString(String(xml), 'text/xml');
-    const parserErrors = xpath(doc, "//*[local-name(.)='parsererror']");
+    const parserErrors = xpath.select("//*[local-name(.)='parsererror']", doc);
     if (parserErrors.length) return { valid: false, signedReferences: [], reason: 'xml_parse_error' };
-    const signatureNode = xpath(doc, `//*[local-name(.)='Signature' and namespace-uri(.)='${XMLDSIG.namespace}']`)[0];
+    const signatureNode = xpath.select(`//*[local-name(.)='Signature' and namespace-uri(.)='${XMLDSIG.namespace}']`, doc)[0];
     if (!signatureNode) return { valid: false, signedReferences: [], reason: 'signature_not_found' };
 
     const verifier = new SignedXml({
