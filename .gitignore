@@ -1,0 +1,9 @@
+.env
+*.pfx
+*.p12
+*.pem
+*.key
+caf/*.xml
+node_modules/
+coverage/
+.DS_Store
