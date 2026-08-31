@@ -2,112 +2,106 @@
 
 Motor tributario desacoplado para POS y sistemas de comandas SOLVEA. El primer consumidor es **Botillería San Pablo**.
 
-## Estado de la fase 2
+## Estado de la fase 3
 
-El servicio ya implementa el contrato HTTP que consume `botilleria-san-pablo` y ahora agrega el primer núcleo tributario real:
+El servicio ya cubre el núcleo criptográfico previo al envío al SII:
 
 - boleta afecta TipoDTE 39 y boleta exenta TipoDTE 41;
-- validación e idempotencia por venta;
 - parser del archivo `AUTORIZACION` del CAF;
 - validación RUT/tipo/rango y verificación del par de llaves RSA del CAF;
-- reserva unívoca de folios, con persistencia local y bloqueo de concurrencia;
-- construcción de `DD` y `TED`;
-- firma `FRMT` con `SHA1withRSA` usando la llave privada entregada con el CAF;
-- verificación interna de la firma TED;
-- codificación de campos TED conforme a ISO-8859-1 y horario `America/Santiago`;
-- generación del DTE con folio y TED incorporados.
+- reserva unívoca e idempotente de folios;
+- construcción y firma del `DD/TED` con `SHA1withRSA`;
+- carga de certificado digital PKCS#12/PFX desde Base64;
+- validación de vigencia y correspondencia entre certificado y llave privada;
+- construcción de `TmstFirma` en horario `America/Santiago`;
+- firma XMLDSIG del elemento `Documento` con C14N 1.0, RSA-SHA1 y digest SHA1;
+- `KeyInfo` con `RSAKeyValue` y `X509Certificate`;
+- verificación criptográfica local de la referencia firmada, incluyendo detección de alteraciones posteriores.
 
-**Todavía no emite una boleta válida ante el SII.** El resultado permanece en `processing` porque falta firmar el DTE completo con XMLDSIG/certificado digital, autenticarse ante el SII, enviarlo y obtener aceptación.
+**Todavía no se marca una boleta como aceptada por el SII.** Aunque un DTE puede quedar en `fiscalStage: "dte_signed"`, la respuesta continúa en `processing` hasta implementar autenticación, envío y consulta de estado en el ambiente SII.
 
 ## API para Botillería San Pablo
 
 ### `POST /v1/documents/issue`
 
-Acepta el payload que ya genera el módulo `commerce-fiscal` de la boti:
-
-```json
-{
-  "idempotencyKey": "tax-<saleId>-boleta_afecta",
-  "documentType": "boleta_afecta",
-  "sale": {
-    "id": "...",
-    "number": "...",
-    "subtotal": 12990,
-    "discount": 0,
-    "total": 12990,
-    "paymentMethod": "cash",
-    "completedAt": "2026-08-31T20:00:00-04:00"
-  },
-  "recipient": {},
-  "items": [
-    { "sku": "...", "name": "Producto", "quantity": 1, "unitPrice": 12990, "subtotal": 12990 }
-  ]
-}
-```
-
-Sin CAF configurado, `development` conserva el borrador de fase 1. Con un CAF válido configurado, la respuesta incluye un folio real reservado dentro del CAF y `fiscalStage: "ted_signed"`.
+Acepta el contrato que ya genera el módulo `commerce-fiscal` de la boti. Con CAF y PFX válidos configurados, la respuesta queda así:
 
 ```json
 {
   "status": "processing",
   "folio": "123",
   "externalId": "sf_...",
-  "fiscalStage": "ted_signed",
+  "fiscalStage": "dte_signed",
   "ted": { "verified": true },
+  "signature": {
+    "verified": true,
+    "documentId": "F123T39"
+  },
   "sii": { "submitted": false, "trackId": "", "accepted": false }
 }
 ```
 
+Sin CAF configurado, `development` conserva el borrador de fase 1. Con CAF pero sin PFX, `development` puede producir `ted_signed`; en `certification` se exige CAF, PFX y persistencia de folios.
+
 ### `GET /v1/readiness`
 
-Informa capacidades implementadas, configuración faltante y bloqueos antes de habilitar producción.
+Informa capacidades implementadas, configuración faltante y bloqueos antes de producción.
 
 ### `GET /health`
 
-Healthcheck para Railway/Vercel/otros runtimes Node.
+Healthcheck del servicio.
 
-## Configuración de CAF
+## Configuración fiscal
 
-El valor de `SII_CAF_39_XML_BASE64` o `SII_CAF_41_XML_BASE64` debe ser el archivo XML completo `AUTORIZACION` entregado por el SII, codificado en Base64. No se debe extraer solamente el bloque `<CAF>` porque el servicio necesita también `RSASK` y `RSAPUBK`.
-
-Para certificación debe configurarse además un directorio persistente:
+El CAF debe cargarse como el XML completo `AUTORIZACION` entregado por el SII, codificado en Base64. El certificado se carga como el archivo PFX/PKCS#12 completo codificado en Base64.
 
 ```text
+SOLVEA_FISCAL_MODE=certification
 SOLVEA_FISCAL_STATE_DIR=/data/solvea-fiscal
 SII_TIME_ZONE=America/Santiago
+SII_RUT_EMISOR=...
+SII_RAZON_SOCIAL=...
+SII_GIRO=...
+SII_DIRECCION_ORIGEN=...
+SII_COMUNA_ORIGEN=CONSTITUCION
+SII_CIUDAD_ORIGEN=CONSTITUCION
+SII_CERT_PFX_BASE64=...
+SII_CERT_PASSWORD=...
+SII_CAF_39_XML_BASE64=...
 ```
 
-La reserva de folios se registra en `folio-state.json` mediante escritura atómica y archivo de bloqueo. Este mecanismo sirve para desarrollo/certificación en una instancia. Producción multi-instancia requerirá un almacén transaccional compartido.
+La reserva de folios utiliza `folio-state.json` con escritura atómica y bloqueo de concurrencia. Es apta para una instancia en desarrollo/certificación; producción multi-instancia requerirá un almacén transaccional compartido.
 
 ## Desarrollo
 
 ```bash
 cp .env.example .env
+npm install
 npm test
 npm run check
 npm start
 ```
 
-Node.js 24 o superior. La fase 2 sigue sin dependencias npm externas.
+Node.js 24 o superior.
 
 ## Integración de la boti
 
-Botillería San Pablo ya quedó preparada para usar SOLVEA Fiscal automáticamente cuando existan:
+Botillería San Pablo ya está preparada para usar este servicio cuando existan:
 
 ```text
 SOLVEA_FISCAL_URL=https://<solvea-fiscal>
 SOLVEA_FISCAL_TOKEN=<token compartido>
 ```
 
-El POS envía `idempotencyKey`, venta, receptor e ítems; SOLVEA Fiscal conserva ese contrato para no reescribir el flujo de caja.
+El POS mantiene su flujo de caja y envía venta, ítems, receptor e `idempotencyKey` al motor fiscal.
 
 ## Hoja de ruta SII
 
 1. ~~Parser CAF + reserva segura de folios 39/41.~~
 2. ~~Construcción DD/TED y firma con la llave privada del CAF.~~
-3. Verificar criptográficamente la firma del SII sobre el CAF.
-4. Firma XMLDSIG del DTE con certificado digital vigente.
-5. Semilla/token SII.
+3. ~~Carga PFX y firma XMLDSIG completa del DTE.~~
+4. Verificar criptográficamente la firma del SII sobre el CAF con la llave oficial aplicable.
+5. Semilla/token SII con certificado digital.
 6. Envío de boleta, Track ID y consulta de estado.
 7. Persistencia de documentos y worker de reintentos.
 8. Resumen de Ventas Diarias / consumo de folios y notas de crédito.
@@ -116,4 +110,4 @@ El POS envía `idempotencyKey`, venta, receptor e ítems; SOLVEA Fiscal conserva
 
 ## Seguridad
 
-Nunca subir certificados, contraseñas ni CAF al repositorio. El CAF contiene la llave privada de timbraje. `.gitignore` bloquea extensiones habituales y la carpeta `caf/`.
+Nunca subir certificados, contraseñas ni CAF al repositorio. El CAF contiene la llave privada de timbraje y el PFX contiene la identidad de firma del contribuyente. Mantener ambos únicamente en secretos del entorno.

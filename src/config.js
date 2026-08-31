@@ -51,7 +51,10 @@ export function readiness(config) {
       cafKeyPairVerification: true,
       folioReservation: true,
       tedSigning: true,
-      dteXmlSignature: false,
+      pfxExtraction: true,
+      certificateValidityCheck: true,
+      dteXmlSignature: true,
+      dteXmlSignatureVerification: true,
       siiAuthentication: false,
       siiSubmission: false,
       siiStatusTracking: false
@@ -59,7 +62,6 @@ export function readiness(config) {
     missing: [...issuerMissing, ...credentialMissing],
     blockers: [
       'verificación de la firma del SII sobre el CAF con llave pública oficial',
-      'firma XMLDSIG del DTE con certificado digital',
       'autenticación SII por semilla/token',
       'envío de boletas y seguimiento de Track ID',
       'almacenamiento transaccional multi-instancia para producción',
