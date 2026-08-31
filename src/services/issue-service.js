@@ -1,7 +1,9 @@
 import { createHash } from 'node:crypto';
+import { extractPfxCredentials } from '../crypto/pfx.js';
 import { validateIssueRequest, paymentCode } from '../domain/tax-document.js';
 import { assertCafCompatible, decodeCafBase64, parseCaf } from '../sii/caf.js';
 import { buildTed } from '../sii/ted.js';
+import { signDteXml } from '../sii/xml-signature.js';
 import { buildUnsignedBoletaDraft } from '../sii/unsigned-boleta.js';
 import { createFolioStore } from './folio-store.js';
 
@@ -33,10 +35,25 @@ function assertIssuerConfigured(config) {
 
 export class IssueService {
   #records = new Map();
+  #certificateCredentials;
 
   constructor(config, { folioStore } = {}) {
     this.config = config;
     this.folioStore = folioStore || createFolioStore(config);
+  }
+
+  #getCertificateCredentials() {
+    if (this.#certificateCredentials !== undefined) return this.#certificateCredentials;
+    if (!this.config.credentials?.certificatePfxBase64) {
+      this.#certificateCredentials = null;
+      return null;
+    }
+    this.#certificateCredentials = extractPfxCredentials({
+      pfxBase64: this.config.credentials.certificatePfxBase64,
+      password: this.config.credentials.certificatePassword,
+      requireCurrent: true
+    });
+    return this.#certificateCredentials;
   }
 
   async issue(input) {
@@ -50,7 +67,7 @@ export class IssueService {
     }
 
     if (this.config.mode === 'production') {
-      throw httpError(503, 'Producción SII permanece bloqueada hasta completar firma XMLDSIG, autenticación, envío, seguimiento y certificación.');
+      throw httpError(503, 'Producción SII permanece bloqueada hasta completar autenticación, envío, seguimiento y certificación.');
     }
 
     const caf = configuredCaf(this.config, document.documentCode);
@@ -96,6 +113,11 @@ export class IssueService {
       throw httpError(503, 'SOLVEA_FISCAL_STATE_DIR es obligatorio en certificación para persistir reservas de folio.');
     }
 
+    const certificateCredentials = this.#getCertificateCredentials();
+    if (this.config.mode === 'certification' && !certificateCredentials) {
+      throw httpError(503, 'SII_CERT_PFX_BASE64 es obligatorio en certificación para firmar el DTE.');
+    }
+
     const reservation = await this.folioStore.reserve({
       caf,
       idempotencyKey: document.idempotencyKey,
@@ -110,14 +132,19 @@ export class IssueService {
       timestamp: reservation.timestamp,
       timeZone: this.config.timeZone
     });
-    const xml = buildUnsignedBoletaDraft({
+    const preparedXml = buildUnsignedBoletaDraft({
       document,
       issuer: this.config.issuer,
       provisionalFolio: reservation.folio,
       paymentMethodCode: paymentCode(document.sale.paymentMethod),
       tedXml: ted.tedXml,
+      signatureTimestamp: reservation.timestamp,
       timeZone: this.config.timeZone
     });
+    const signed = certificateCredentials
+      ? signDteXml({ xml: preparedXml, credentials: certificateCredentials })
+      : null;
+    const xml = signed?.xml || preparedXml;
 
     const response = {
       id: externalId,
@@ -128,8 +155,10 @@ export class IssueService {
       pdfUrl: '',
       sii: { submitted: false, trackId: '', accepted: false },
       development: this.config.mode === 'development',
-      fiscalStage: 'ted_signed',
-      warning: 'Folio reservado y TED firmado con CAF. El DTE aún no es válido: falta firma XMLDSIG y recepción SII.',
+      fiscalStage: signed ? 'dte_signed' : 'ted_signed',
+      warning: signed
+        ? 'DTE con TED y XMLDSIG verificados localmente. Aún no tiene recepción ni aceptación del SII.'
+        : 'Folio reservado y TED firmado con CAF. El DTE aún no es válido: falta certificado/XMLDSIG y recepción SII.',
       caf: {
         id: caf.id,
         documentType: caf.documentType,
@@ -140,6 +169,16 @@ export class IssueService {
       ted: {
         timestamp: ted.timestamp,
         verified: true
+      },
+      signature: signed ? {
+        verified: true,
+        documentId: signed.documentId,
+        digestValue: signed.digestValue,
+        certificateFingerprint256: certificateCredentials.fingerprint256,
+        certificateValidFrom: certificateCredentials.validFrom,
+        certificateValidTo: certificateCredentials.validTo
+      } : {
+        verified: false
       },
       document: {
         type: document.documentType,
