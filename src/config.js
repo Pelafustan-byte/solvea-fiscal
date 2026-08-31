@@ -1,4 +1,7 @@
+import { authBaseUrlForMode } from './sii/auth-client.js';
+
 const text = (value) => String(value ?? '').trim();
+const bool = (value, fallback = false) => value == null || value === '' ? fallback : ['1', 'true', 'yes', 'on'].includes(String(value).toLowerCase());
 
 export function loadConfig(env = process.env) {
   const mode = text(env.SOLVEA_FISCAL_MODE || 'development').toLowerCase();
@@ -12,6 +15,11 @@ export function loadConfig(env = process.env) {
     apiToken: text(env.SOLVEA_FISCAL_API_TOKEN),
     stateDir: text(env.SOLVEA_FISCAL_STATE_DIR),
     timeZone: text(env.SII_TIME_ZONE || 'America/Santiago'),
+    sii: {
+      networkEnabled: bool(env.SII_NETWORK_ENABLED, false),
+      authBaseUrl: text(env.SII_AUTH_BASE_URL) || authBaseUrlForMode(mode),
+      timeoutMs: Math.max(1000, Number(env.SII_HTTP_TIMEOUT_MS || 15000))
+    },
     issuer: {
       rut: text(env.SII_RUT_EMISOR),
       legalName: text(env.SII_RAZON_SOCIAL),
@@ -46,6 +54,8 @@ export function readiness(config) {
     productionReady: false,
     configurationReady,
     statePersistence: config.stateDir ? 'file' : 'memory',
+    siiNetworkEnabled: Boolean(config.sii?.networkEnabled),
+    siiAuthBaseUrl: config.sii?.authBaseUrl || '',
     capabilities: {
       cafParsing: true,
       cafKeyPairVerification: true,
@@ -55,14 +65,16 @@ export function readiness(config) {
       certificateValidityCheck: true,
       dteXmlSignature: true,
       dteXmlSignatureVerification: true,
-      siiAuthentication: false,
+      siiSeedSignature: true,
+      siiAuthenticationClient: true,
+      siiAuthenticationLive: Boolean(config.sii?.networkEnabled && config.credentials.certificatePfxBase64),
       siiSubmission: false,
       siiStatusTracking: false
     },
     missing: [...issuerMissing, ...credentialMissing],
     blockers: [
       'verificación de la firma del SII sobre el CAF con llave pública oficial',
-      'autenticación SII por semilla/token',
+      ...(config.sii?.networkEnabled ? [] : ['habilitar red SII explícitamente para pruebas de certificación']),
       'envío de boletas y seguimiento de Track ID',
       'almacenamiento transaccional multi-instancia para producción',
       'Resumen de Ventas Diarias / consumo de folios',
