@@ -5,6 +5,8 @@ import { isValidRut, normalizeRut } from '../src/domain/rut.js';
 
 const config = {
   mode: 'development',
+  timeZone: 'America/Santiago',
+  stateDir: '',
   issuer: {
     rut: '76000000-0',
     legalName: 'BOTILLERIA SAN PABLO SPA',
@@ -13,7 +15,8 @@ const config = {
     commune: 'CONSTITUCION',
     city: 'CONSTITUCION',
     branchCode: ''
-  }
+  },
+  credentials: {}
 };
 
 const request = {
@@ -38,23 +41,24 @@ test('normaliza y valida RUT', () => {
   assert.equal(isValidRut('12.345.678-9'), false);
 });
 
-test('emite borrador idempotente para contrato Botillería San Pablo', () => {
+test('emite borrador idempotente para contrato Botillería San Pablo', async () => {
   const service = new IssueService(config);
-  const first = service.issue(request);
-  const second = service.issue(structuredClone(request));
+  const first = await service.issue(request);
+  const second = await service.issue(structuredClone(request));
   assert.equal(first.status, 'processing');
   assert.equal(first.externalId, second.externalId);
+  assert.equal(first.fiscalStage, 'draft_without_caf');
   assert.match(first.xml, /<TipoDTE>39<\/TipoDTE>/);
   assert.match(first.xml, /<MedioPago>1<\/MedioPago>/);
   assert.match(first.xml, /TED pendiente de CAF/);
 });
 
-test('rechaza reutilización de idempotencyKey con otro monto', () => {
+test('rechaza reutilización de idempotencyKey con otro monto', async () => {
   const service = new IssueService(config);
-  service.issue(request);
+  await service.issue(request);
   const changed = structuredClone(request);
   changed.sale.total = 9990;
   changed.items[0].subtotal = 9990;
   changed.items[0].unitPrice = 9990;
-  assert.throws(() => service.issue(changed), /idempotencyKey/);
+  await assert.rejects(() => service.issue(changed), /idempotencyKey/);
 });
