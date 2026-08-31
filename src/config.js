@@ -10,6 +10,8 @@ export function loadConfig(env = process.env) {
     port: Number(env.PORT || 8787),
     mode,
     apiToken: text(env.SOLVEA_FISCAL_API_TOKEN),
+    stateDir: text(env.SOLVEA_FISCAL_STATE_DIR),
+    timeZone: text(env.SII_TIME_ZONE || 'America/Santiago'),
     issuer: {
       rut: text(env.SII_RUT_EMISOR),
       legalName: text(env.SII_RAZON_SOCIAL),
@@ -36,20 +38,32 @@ export function readiness(config) {
   const credentialMissing = [];
   if (!config.credentials.certificatePfxBase64) credentialMissing.push('certificate');
   if (!config.credentials.caf39Base64) credentialMissing.push('caf39');
+  if (config.mode === 'certification' && !config.stateDir) credentialMissing.push('stateDir');
 
-  const productionReady = issuerMissing.length === 0 && credentialMissing.length === 0;
+  const configurationReady = issuerMissing.length === 0 && credentialMissing.length === 0;
   return {
     mode: config.mode,
     productionReady: false,
-    configurationReady: productionReady,
+    configurationReady,
+    statePersistence: config.stateDir ? 'file' : 'memory',
+    capabilities: {
+      cafParsing: true,
+      cafKeyPairVerification: true,
+      folioReservation: true,
+      tedSigning: true,
+      dteXmlSignature: false,
+      siiAuthentication: false,
+      siiSubmission: false,
+      siiStatusTracking: false
+    },
     missing: [...issuerMissing, ...credentialMissing],
     blockers: [
-      'CAF parser y reserva transaccional de folios',
-      'TED firmado con clave privada del CAF',
-      'firma XML del DTE con certificado digital',
+      'verificación de la firma del SII sobre el CAF con llave pública oficial',
+      'firma XMLDSIG del DTE con certificado digital',
       'autenticación SII por semilla/token',
       'envío de boletas y seguimiento de Track ID',
-      'Reporte de Ventas Diarias / consumo de folios',
+      'almacenamiento transaccional multi-instancia para producción',
+      'Resumen de Ventas Diarias / consumo de folios',
       'certificación del contribuyente ante el SII'
     ]
   };

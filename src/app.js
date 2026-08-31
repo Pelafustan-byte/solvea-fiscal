@@ -57,7 +57,7 @@ export function createApp(config) {
       if (req.method === 'POST' && url.pathname === '/v1/documents/issue') {
         if (!authorized(req, config)) return json(res, 401, { error: 'No autorizado.' });
         const body = await readJson(req);
-        return json(res, 202, issueService.issue(body));
+        return json(res, 202, await issueService.issue(body));
       }
 
       return json(res, 404, { error: 'Ruta no encontrada.' });
