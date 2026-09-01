@@ -26,8 +26,17 @@ function httpError(status, message) {
   return error;
 }
 
+const CAF_KEY_BY_DOCUMENT_CODE = {
+  39: 'caf39Base64',
+  41: 'caf41Base64',
+  33: 'caf33Base64',
+  34: 'caf34Base64'
+};
+const FACTURA_CODES = new Set([33, 34]);
+
 function configuredCaf(config, documentCode) {
-  const value = documentCode === 41 ? config.credentials?.caf41Base64 : config.credentials?.caf39Base64;
+  const key = CAF_KEY_BY_DOCUMENT_CODE[documentCode];
+  const value = key ? config.credentials?.[key] : null;
   if (!value) return null;
   return parseCaf(decodeCafBase64(value));
 }
@@ -167,6 +176,9 @@ export class IssueService {
     }
 
     if (!signed || !certificateCredentials) throw httpError(503, 'No se puede enviar al SII sin DTE y certificado verificados.');
+    if (FACTURA_CODES.has(document.documentCode)) {
+      throw httpError(501, 'Envío SII de factura electrónica aún no implementado (protocolo/endpoint de Intercambio de Factura distinto al de boleta.electronica.envio, pendiente de verificar). El DTE queda firmado localmente pero no se envía.');
+    }
     assertSubmissionConfigured(this.config);
     const setId = `SetDocB0T${document.documentCode}_${reservation.folio}`;
     const unsignedEnvelope = buildUnsignedEnvioBoleta({

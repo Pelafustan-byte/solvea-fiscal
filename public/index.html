@@ -1,0 +1,370 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SOLVEA Fiscal · Emisor</title>
+<style>
+  :root {
+    --bg: #f4f5f7; --panel: #ffffff; --border: #dde1e6; --text: #1c2126; --muted: #6b7280;
+    --accent: #0f766e; --accent-dark: #0b5b55; --danger: #b91c1c; --warn: #92400e; --ok: #15803d;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #14171a; --panel: #1c2126; --border: #2c333a; --text: #e7eaee; --muted: #9aa4af; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.4 -apple-system, Segoe UI, Roboto, sans-serif; }
+  header { display: flex; align-items: center; gap: 12px; padding: 14px 20px; background: var(--panel); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 5; }
+  header h1 { font-size: 16px; margin: 0; flex: 1; }
+  header .badge { font-size: 11px; padding: 2px 8px; border-radius: 999px; background: var(--accent); color: #fff; }
+  #logoPreview { width: 36px; height: 36px; object-fit: contain; border-radius: 6px; background: #fff; border: 1px solid var(--border); }
+  main { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 16px; max-width: 1400px; margin: 0 auto; }
+  @media (max-width: 980px) { main { grid-template-columns: 1fr; } }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+  .panel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 12px; }
+  label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 3px; }
+  input, select, textarea { width: 100%; padding: 7px 9px; border: 1px solid var(--border); border-radius: 6px; background: transparent; color: var(--text); font-size: 13px; }
+  .row { display: grid; gap: 10px; margin-bottom: 10px; }
+  .row.cols-2 { grid-template-columns: 1fr 1fr; }
+  .row.cols-3 { grid-template-columns: 2fr 1fr 1fr; }
+  .row.cols-4 { grid-template-columns: 2fr 1fr 1fr auto; align-items: end; }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  th, td { padding: 6px 4px; border-bottom: 1px solid var(--border); text-align: left; }
+  th { color: var(--muted); font-weight: 600; }
+  button { cursor: pointer; border: none; border-radius: 6px; padding: 8px 14px; font-size: 13px; font-weight: 600; background: var(--accent); color: #fff; }
+  button:hover { background: var(--accent-dark); }
+  button.secondary { background: transparent; color: var(--text); border: 1px solid var(--border); }
+  button.danger { background: transparent; color: var(--danger); border: 1px solid var(--danger); padding: 4px 8px; font-size: 12px; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  .hint { font-size: 11.5px; color: var(--muted); margin-top: 4px; }
+  .pill { display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 999px; margin-left: 6px; }
+  .pill.ok { background: #dcfce7; color: var(--ok); }
+  .pill.no { background: #fee2e2; color: var(--danger); }
+  #preview { background: #fff; color: #111; border-radius: 8px; padding: 18px; font-family: 'Courier New', monospace; font-size: 12.5px; max-width: 420px; margin: 0 auto; border: 1px dashed #999; }
+  #preview .center { text-align: center; }
+  #preview hr { border: none; border-top: 1px dashed #999; margin: 8px 0; }
+  #preview table { font-size: 11.5px; }
+  #preview img { max-height: 46px; display: block; margin: 0 auto 6px; }
+  .result-box { white-space: pre-wrap; word-break: break-all; background: rgba(127,127,127,.08); border-radius: 6px; padding: 10px; font-size: 11.5px; max-height: 260px; overflow: auto; }
+  .stage-ok { color: var(--ok); } .stage-warn { color: var(--warn); } .stage-err { color: var(--danger); }
+  .toolbar { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+  .field-note { font-size: 11px; color: var(--muted); }
+</style>
+</head>
+<body>
+
+<header>
+  <img id="logoPreview" src="" alt="logo" style="display:none">
+  <h1>SOLVEA Fiscal <span class="badge" id="modeBadge">…</span></h1>
+  <input type="file" id="logoInput" accept="image/png,image/jpeg,image/webp" style="width:auto">
+  <input type="password" id="tokenInput" placeholder="Bearer token" style="width:200px" autocomplete="off">
+  <button id="saveTokenBtn" class="secondary">Guardar token</button>
+</header>
+
+<main>
+  <div>
+    <div class="panel">
+      <h2>Documento</h2>
+      <div class="row cols-2">
+        <div>
+          <label>Tipo de documento</label>
+          <select id="documentType">
+            <option value="boleta_afecta">Boleta afecta (39)</option>
+            <option value="boleta_exenta">Boleta exenta (41)</option>
+            <option value="factura_afecta">Factura afecta (33)</option>
+            <option value="factura_exenta">Factura exenta (34)</option>
+          </select>
+          <div class="field-note" id="docAvailability"></div>
+        </div>
+        <div>
+          <label>Medio de pago</label>
+          <select id="paymentMethod">
+            <option value="cash">Efectivo</option>
+            <option value="card">Tarjeta</option>
+            <option value="transfer">Transferencia</option>
+          </select>
+        </div>
+      </div>
+      <div class="row cols-2">
+        <div><label>N° de venta (sale.number)</label><input id="saleNumber" value="SBX-000001"></div>
+        <div><label>Descuento (CLP, opcional)</label><input id="discount" type="number" value="0" min="0"></div>
+      </div>
+    </div>
+
+    <div class="panel" id="recipientPanel">
+      <h2>Receptor <span class="field-note" id="recipientRequiredNote"></span></h2>
+      <div class="row cols-2">
+        <div><label>RUT</label><input id="recRut" placeholder="12345678-9"></div>
+        <div><label>Razón social</label><input id="recName" placeholder="Cliente / Consumidor Final"></div>
+      </div>
+      <div class="row cols-2">
+        <div><label>Giro</label><input id="recGiro"></div>
+        <div><label>Dirección</label><input id="recAddress"></div>
+      </div>
+      <div class="row cols-2">
+        <div><label>Comuna</label><input id="recCommune"></div>
+        <div><label>Ciudad</label><input id="recCity"></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Ítems</h2>
+      <table id="itemsTable">
+        <thead><tr><th>Nombre</th><th>Cant.</th><th>P. unit.</th><th>Exento</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <div class="toolbar">
+        <button type="button" id="addItemBtn" class="secondary">+ Agregar ítem</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Acciones</h2>
+      <div class="toolbar">
+        <button id="issueBtn">Emitir documento</button>
+        <button id="statusBtn" class="secondary">Consultar estado</button>
+      </div>
+      <div class="hint" id="idemHint"></div>
+      <div class="result-box" id="resultBox" style="display:none"></div>
+    </div>
+  </div>
+
+  <div>
+    <div class="panel">
+      <h2>Vista previa</h2>
+      <div id="preview"></div>
+    </div>
+    <div class="panel">
+      <h2>Emisor (config Railway, sólo lectura)</h2>
+      <div class="result-box" id="issuerBox">Cargando…</div>
+    </div>
+  </div>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const state = {
+  token: localStorage.getItem('solvea_token') || '',
+  issuer: null,
+  docTypesAvailable: {},
+  logo: '',
+  items: [{ name: 'Producto de prueba', quantity: 1, unitPrice: 1990, exempt: false }]
+};
+$('tokenInput').value = state.token;
+
+function authHeaders(extra = {}) {
+  return { ...extra, ...(state.token ? { Authorization: 'Bearer ' + state.token } : {}) };
+}
+
+async function api(path, opts = {}) {
+  const res = await fetch(path, { ...opts, headers: authHeaders(opts.headers) });
+  let body = null;
+  try { body = await res.json(); } catch {}
+  if (!res.ok) throw Object.assign(new Error((body && body.error) || res.statusText), { status: res.status, body });
+  return body;
+}
+
+$('saveTokenBtn').onclick = () => {
+  state.token = $('tokenInput').value.trim();
+  localStorage.setItem('solvea_token', state.token);
+  loadConfig();
+};
+
+function moneyCLP(n) { return '$' + Number(n || 0).toLocaleString('es-CL'); }
+
+function isFactura() { return $('documentType').value.startsWith('factura'); }
+
+function renderItemsTable() {
+  const tbody = $('itemsTable').querySelector('tbody');
+  tbody.innerHTML = '';
+  state.items.forEach((item, i) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td><input data-f="name" data-i="${i}" value="${item.name.replace(/"/g, '&quot;')}"></td>
+      <td><input data-f="quantity" data-i="${i}" type="number" min="1" value="${item.quantity}" style="width:60px"></td>
+      <td><input data-f="unitPrice" data-i="${i}" type="number" min="0" value="${item.unitPrice}" style="width:90px"></td>
+      <td style="text-align:center"><input data-f="exempt" data-i="${i}" type="checkbox" ${item.exempt ? 'checked' : ''} style="width:auto"></td>
+      <td><button type="button" class="danger" data-remove="${i}">✕</button></td>`;
+    tbody.appendChild(tr);
+  });
+  tbody.querySelectorAll('input').forEach((input) => {
+    input.addEventListener('input', (e) => {
+      const i = Number(e.target.dataset.i);
+      const f = e.target.dataset.f;
+      state.items[i][f] = f === 'exempt' ? e.target.checked : (f === 'name' ? e.target.value : Number(e.target.value));
+      renderPreview();
+    });
+  });
+  tbody.querySelectorAll('[data-remove]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      state.items.splice(Number(btn.dataset.remove), 1);
+      renderItemsTable(); renderPreview();
+    });
+  });
+}
+
+$('addItemBtn').onclick = () => {
+  state.items.push({ name: '', quantity: 1, unitPrice: 0, exempt: isFactura() });
+  renderItemsTable(); renderPreview();
+};
+
+function computeTotals() {
+  const exemptDoc = ['boleta_exenta', 'factura_exenta'].includes($('documentType').value);
+  const total = state.items.reduce((s, it) => s + (Number(it.quantity) * Number(it.unitPrice)), 0);
+  if (exemptDoc) return { net: 0, exempt: total, vat: 0, total };
+  const exempt = state.items.filter((it) => it.exempt).reduce((s, it) => s + it.quantity * it.unitPrice, 0);
+  const affected = total - exempt;
+  const net = Math.round(affected / 1.19);
+  const vat = affected - net;
+  return { net, exempt, vat, total };
+}
+
+function renderPreview() {
+  const totals = computeTotals();
+  const type = $('documentType').value;
+  const label = { boleta_afecta: 'BOLETA ELECTRÓNICA', boleta_exenta: 'BOLETA ELECTRÓNICA EXENTA', factura_afecta: 'FACTURA ELECTRÓNICA', factura_exenta: 'FACTURA ELECTRÓNICA EXENTA' }[type];
+  const issuer = state.issuer || {};
+  const showRecipient = isFactura();
+  const itemsRows = state.items.map((it) => `<tr><td>${it.name || '—'}${it.exempt ? ' <small>(exento)</small>' : ''}</td><td style="text-align:right">${it.quantity}</td><td style="text-align:right">${moneyCLP(it.unitPrice)}</td><td style="text-align:right">${moneyCLP(it.quantity * it.unitPrice)}</td></tr>`).join('');
+
+  $('preview').innerHTML = `
+    ${state.logo ? `<img src="${state.logo}">` : ''}
+    <div class="center"><strong>${issuer.legalName || 'Emisor sin configurar'}</strong><br>
+    RUT ${issuer.rut || '-'}<br>${issuer.activity || ''}<br>${issuer.address || ''}, ${issuer.commune || ''}</div>
+    <hr>
+    <div class="center"><strong>${label}</strong><br>Folio: (asignado al emitir)</div>
+    <hr>
+    ${showRecipient ? `<div>Señor(a): ${$('recName').value || '—'}<br>RUT: ${$('recRut').value || '—'}<br>Giro: ${$('recGiro').value || '—'}<br>${$('recAddress').value || ''} ${$('recCommune').value || ''}</div><hr>` : ''}
+    <table>${itemsRows}</table>
+    <hr>
+    ${totals.exempt > 0 && (totals.net > 0 || totals.vat > 0) ? `<div>Exento: ${moneyCLP(totals.exempt)}</div>` : ''}
+    ${totals.net > 0 || totals.vat > 0 ? `<div>Neto: ${moneyCLP(totals.net)}</div><div>IVA (19%): ${moneyCLP(totals.vat)}</div>` : ''}
+    <div><strong>Total: ${moneyCLP(totals.total)}</strong></div>
+    <hr>
+    <div class="center" style="font-size:10px">Timbre electrónico SII</div>
+  `;
+}
+
+$('documentType').addEventListener('change', () => {
+  const factura = isFactura();
+  $('recipientRequiredNote').textContent = factura ? '(obligatorio para factura)' : '(opcional para boleta)';
+  updateDocAvailabilityHint();
+  renderPreview();
+});
+
+function updateDocAvailabilityHint() {
+  const type = $('documentType').value;
+  const available = state.docTypesAvailable[type];
+  const el = $('docAvailability');
+  if (available === undefined) { el.textContent = ''; return; }
+  el.innerHTML = available
+    ? '<span class="pill ok">CAF configurado</span>'
+    : '<span class="pill no">Sin CAF — sólo borrador local, sin folio real</span>';
+}
+
+['recRut', 'recName', 'recGiro', 'recAddress', 'recCommune', 'recCity', 'saleNumber', 'discount'].forEach((id) => {
+  $(id).addEventListener('input', renderPreview);
+});
+$('paymentMethod').addEventListener('change', renderPreview);
+
+async function loadConfig() {
+  $('issuerBox').textContent = 'Cargando…';
+  try {
+    const cfg = await api('/v1/config/public');
+    state.issuer = cfg.issuer;
+    state.docTypesAvailable = cfg.documentTypesAvailable || {};
+    $('modeBadge').textContent = cfg.mode + (cfg.siiNetworkEnabled ? ' · red SII ON' : ' · red SII OFF');
+    $('issuerBox').textContent = JSON.stringify(cfg.issuer, null, 2);
+    updateDocAvailabilityHint();
+    renderPreview();
+  } catch (e) {
+    $('issuerBox').textContent = 'No se pudo cargar (revisa el token). ' + e.message;
+  }
+}
+
+async function loadLogo() {
+  try {
+    const res = await fetch('/v1/branding/logo');
+    const data = await res.json();
+    if (data.logo) {
+      state.logo = data.logo;
+      $('logoPreview').src = data.logo;
+      $('logoPreview').style.display = 'block';
+      renderPreview();
+    }
+  } catch {}
+}
+
+$('logoInput').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = async () => {
+    state.logo = reader.result;
+    $('logoPreview').src = state.logo;
+    $('logoPreview').style.display = 'block';
+    renderPreview();
+    try {
+      await api('/v1/branding/logo', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ logo: state.logo }) });
+    } catch (err) {
+      alert('No se pudo guardar el logo: ' + err.message);
+    }
+  };
+  reader.readAsDataURL(file);
+});
+
+let lastIdemKey = '';
+$('issueBtn').addEventListener('click', async () => {
+  const type = $('documentType').value;
+  const totals = computeTotals();
+  lastIdemKey = 'ui-' + Date.now();
+  $('idemHint').textContent = 'idempotencyKey: ' + lastIdemKey;
+  const payload = {
+    idempotencyKey: lastIdemKey,
+    documentType: type,
+    sale: {
+      id: lastIdemKey,
+      number: $('saleNumber').value || lastIdemKey,
+      subtotal: totals.total,
+      discount: Number($('discount').value || 0),
+      total: totals.total,
+      paymentMethod: $('paymentMethod').value,
+      completedAt: new Date().toISOString()
+    },
+    recipient: isFactura() || $('recRut').value ? {
+      rut: $('recRut').value, legalName: $('recName').value, activity: $('recGiro').value,
+      address: $('recAddress').value, commune: $('recCommune').value, city: $('recCity').value
+    } : {},
+    items: state.items.map((it) => ({ ...it, subtotal: it.quantity * it.unitPrice }))
+  };
+  const box = $('resultBox');
+  box.style.display = 'block';
+  box.textContent = 'Emitiendo…';
+  try {
+    const result = await api('/v1/documents/issue', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
+    box.textContent = JSON.stringify(result, null, 2);
+  } catch (e) {
+    box.textContent = 'Error ' + (e.status || '') + ': ' + e.message + (e.body ? '\n' + JSON.stringify(e.body, null, 2) : '');
+  }
+});
+
+$('statusBtn').addEventListener('click', async () => {
+  if (!lastIdemKey) { alert('Primero emite un documento en esta sesión.'); return; }
+  const box = $('resultBox');
+  box.style.display = 'block';
+  box.textContent = 'Consultando…';
+  try {
+    const result = await api('/v1/documents/status', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ idempotencyKey: lastIdemKey }) });
+    box.textContent = JSON.stringify(result, null, 2);
+  } catch (e) {
+    box.textContent = 'Error: ' + e.message;
+  }
+});
+
+renderItemsTable();
+renderPreview();
+loadLogo();
+if (state.token) loadConfig(); else $('issuerBox').textContent = 'Ingresa el Bearer token y guarda para cargar la configuración.';
+</script>
+</body>
+</html>

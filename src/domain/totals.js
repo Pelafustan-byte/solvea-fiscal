@@ -1,4 +1,6 @@
 export const IVA_RATE = 0.19;
+export const EXEMPT_ONLY_CODES = new Set([41, 34]);
+export const FACTURA_CODES = new Set([33, 34]);
 
 function asInteger(value, field) {
   const number = Number(value);
@@ -14,7 +16,7 @@ export function computeTaxTotals(document) {
   const total = asInteger(document?.sale?.total, 'sale.total');
   const items = Array.isArray(document?.items) ? document.items : [];
 
-  if (Number(document?.documentCode) === 41) {
+  if (EXEMPT_ONLY_CODES.has(Number(document?.documentCode))) {
     return { net: 0, exempt: total, vatRate: 0, vat: 0, total };
   }
 
@@ -34,8 +36,9 @@ export function computeTaxTotals(document) {
 
 export function publicRepresentation({ document, issuer, folio = '', issuedAt = null }) {
   const totals = computeTaxTotals(document);
+  const isFactura = FACTURA_CODES.has(Number(document.documentCode));
   return {
-    kind: 'boleta',
+    kind: isFactura ? 'factura' : 'boleta',
     documentType: document.documentType,
     documentCode: document.documentCode,
     folio: String(folio || ''),
@@ -48,6 +51,14 @@ export function publicRepresentation({ document, issuer, folio = '', issuedAt = 
       commune: String(issuer?.commune || ''),
       city: String(issuer?.city || '')
     },
+    recipient: isFactura ? {
+      rut: String(document.recipient?.rut || ''),
+      legalName: String(document.recipient?.legalName || ''),
+      activity: String(document.recipient?.activity || ''),
+      address: String(document.recipient?.address || ''),
+      commune: String(document.recipient?.commune || ''),
+      city: String(document.recipient?.city || '')
+    } : undefined,
     sale: {
       id: document.sale.id,
       number: document.sale.number,
