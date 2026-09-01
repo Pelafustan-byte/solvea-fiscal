@@ -53,8 +53,28 @@ export class IssueService {
     this.config = config;
     this.folioStore = folioStore || createFolioStore(config);
     this.submissionStore = submissionStore || createSubmissionStore(config);
-    this.authClient = authClient || new SiiAuthClient({ baseUrl: config.sii?.authBaseUrl, timeoutMs: config.sii?.timeoutMs });
-    this.boletaClient = boletaClient || new SiiBoletaClient({ baseUrl: config.sii?.boletaBaseUrl, timeoutMs: config.sii?.timeoutMs });
+    this.authClient = authClient || null;
+    this.boletaClient = boletaClient || null;
+  }
+
+  #getAuthClient() {
+    if (!this.authClient) {
+      this.authClient = new SiiAuthClient({
+        baseUrl: this.config.sii?.authBaseUrl,
+        timeoutMs: this.config.sii?.timeoutMs
+      });
+    }
+    return this.authClient;
+  }
+
+  #getBoletaClient() {
+    if (!this.boletaClient) {
+      this.boletaClient = new SiiBoletaClient({
+        baseUrl: this.config.sii?.boletaBaseUrl,
+        timeoutMs: this.config.sii?.timeoutMs
+      });
+    }
+    return this.boletaClient;
   }
 
   #getCertificateCredentials() {
@@ -177,8 +197,8 @@ export class IssueService {
     });
 
     try {
-      const authentication = await this.authClient.authenticate(certificateCredentials);
-      const submitted = await this.boletaClient.submit({
+      const authentication = await this.#getAuthClient().authenticate(certificateCredentials);
+      const submitted = await this.#getBoletaClient().submit({
         token: authentication.token,
         senderRut: this.config.sii.senderRut,
         companyRut: this.config.issuer.rut,
