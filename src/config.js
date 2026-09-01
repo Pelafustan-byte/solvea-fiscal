@@ -26,6 +26,7 @@ export function loadConfig(env = process.env) {
     timeZone: text(env.SII_TIME_ZONE || 'America/Santiago'),
     sii: {
       networkEnabled: bool(env.SII_NETWORK_ENABLED, false),
+      certificationSubmissionEnabled: bool(env.SII_CERTIFICATION_SUBMISSION_ENABLED, false),
       authBaseUrl: text(env.SII_AUTH_BASE_URL) || authBaseUrlForMode(mode),
       boletaBaseUrl: text(env.SII_BOLETA_BASE_URL) || boletaBaseUrlForMode(mode),
       timeoutMs: Math.max(1000, Number(env.SII_HTTP_TIMEOUT_MS || 15000)),
@@ -87,6 +88,7 @@ export function readiness(config) {
     sandboxEndpointsSafe,
     statePersistence: config.stateDir ? 'file' : 'memory',
     siiNetworkEnabled: Boolean(config.sii?.networkEnabled),
+    certificationSubmissionEnabled: Boolean(config.sii?.certificationSubmissionEnabled),
     siiAuthBaseUrl: config.sii?.authBaseUrl || '',
     siiBoletaBaseUrl: config.sii?.boletaBaseUrl || '',
     capabilities: {
@@ -108,6 +110,10 @@ export function readiness(config) {
       sandboxProbe: true,
       siiLiveFlow: Boolean(config.sii?.networkEnabled && submissionReady)
     },
+    rcof: {
+      required: false,
+      note: 'Obligación eliminada desde 2022-08-01 por Resolución Ex. SII N°53/2022: el Registro de Ventas se alimenta automáticamente de las boletas recibidas por el SII, sin envío separado de RCOF/Resumen de Ventas Diarias. Verificar con Mesa de Ayuda SII si el correo de certificación lo sigue exigiendo.'
+    },
     documentTypesAvailable: {
       boleta_afecta: Boolean(config.credentials.caf39Base64),
       boleta_exenta: Boolean(config.credentials.caf41Base64),
@@ -121,7 +127,7 @@ export function readiness(config) {
       ...(config.mode === 'certification' && !sandboxEndpointsSafe ? ['usar endpoints oficiales apicert/pangal para sandbox'] : []),
       'worker automático de conciliación/reintentos controlados',
       'almacenamiento transaccional multi-instancia para producción',
-      'Resumen de Ventas Diarias / consumo de folios',
+      ...(config.sii?.certificationSubmissionEnabled ? [] : ['SII_CERTIFICATION_SUBMISSION_ENABLED=false: reserva de folios y envío de DTE bloqueados']),
       'certificación del contribuyente ante el SII'
     ]
   };

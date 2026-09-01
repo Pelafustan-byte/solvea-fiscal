@@ -12,6 +12,13 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 export class MemoryFolioStore {
   #state = { nextByCaf: {}, reservations: {} };
 
+  async peek({ caf }) {
+    const next = Number(this.#state.nextByCaf[caf.id] ?? caf.from);
+    const used = Math.max(0, next - caf.from);
+    const total = caf.to - caf.from + 1;
+    return { next, used, total, available: Math.max(0, total - used) };
+  }
+
   async reserve({ caf, idempotencyKey, payloadHash, timestamp }) {
     const existing = this.#state.reservations[idempotencyKey];
     if (existing) {
@@ -90,6 +97,14 @@ export class FileFolioStore {
         if (error.code !== 'ENOENT') throw error;
       });
     }
+  }
+
+  async peek({ caf }) {
+    const state = await this.#readState();
+    const next = Number(state.nextByCaf[caf.id] ?? caf.from);
+    const used = Math.max(0, next - caf.from);
+    const total = caf.to - caf.from + 1;
+    return { next, used, total, available: Math.max(0, total - used) };
   }
 
   async reserve({ caf, idempotencyKey, payloadHash, timestamp }) {

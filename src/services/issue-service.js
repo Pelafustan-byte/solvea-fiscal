@@ -34,24 +34,33 @@ const CAF_KEY_BY_DOCUMENT_CODE = {
 };
 const FACTURA_CODES = new Set([33, 34]);
 
-function configuredCaf(config, documentCode) {
+export function configuredCaf(config, documentCode) {
   const key = CAF_KEY_BY_DOCUMENT_CODE[documentCode];
   const value = key ? config.credentials?.[key] : null;
   if (!value) return null;
   return parseCaf(decodeCafBase64(value));
 }
 
-function assertIssuerConfigured(config) {
+export function issuerMissingFields(config) {
   const required = ['rut', 'legalName', 'activity', 'address', 'commune', 'city'];
-  const missing = required.filter((key) => !String(config.issuer?.[key] || '').trim());
+  return required.filter((key) => !String(config.issuer?.[key] || '').trim());
+}
+
+function assertIssuerConfigured(config) {
+  const missing = issuerMissingFields(config);
   if (missing.length) throw httpError(503, `Faltan datos del emisor: ${missing.join(', ')}.`);
 }
 
-function assertSubmissionConfigured(config) {
+export function submissionMissingFields(config) {
   const missing = [];
   if (!config.sii?.senderRut) missing.push('SII_RUT_ENVIA');
   if (!config.sii?.resolutionDate) missing.push('SII_FCH_RESOL');
   if (config.sii?.resolutionNumber === '') missing.push('SII_NRO_RESOL');
+  return missing;
+}
+
+function assertSubmissionConfigured(config) {
+  const missing = submissionMissingFields(config);
   if (missing.length) throw httpError(503, `Falta configuración para envío SII: ${missing.join(', ')}.`);
 }
 
@@ -93,6 +102,48 @@ export class IssueService {
       requireCurrent: true
     });
     return this.#certificateCredentials;
+  }
+
+  /**
+   * Prepara y valida un documento (representación + XML DTE) sin reservar folio real
+   * ni tocar el CAF, el certificado ni el SII. Seguro de llamar en cualquier momento.
+   */
+  async prepare(input) {
+    const document = validateIssueRequest(input);
+    let caf = null;
+    let cafError = '';
+    try {
+      caf = configuredCaf(this.config, document.documentCode);
+    } catch (error) {
+      cafError = error.message;
+    }
+    const xml = buildUnsignedBoletaDraft({
+      document, issuer: this.config.issuer,
+      paymentMethodCode: paymentCode(document.sale.paymentMethod), timeZone: this.config.timeZone
+    });
+    const representation = publicRepresentation({ document, issuer: this.config.issuer });
+    return {
+      prepared: true,
+      folioReserved: false,
+      folioConsumed: 0,
+      documentType: document.documentType,
+      documentCode: document.documentCode,
+      caf: caf ? { id: caf.id, documentType: caf.documentType, from: caf.from, to: caf.to, authorizedAt: caf.authorizedAt } : null,
+      cafError,
+      xml,
+      representation,
+      document: {
+        type: document.documentType, code: document.documentCode, saleId: document.sale.id,
+        saleNumber: document.sale.number, total: document.sale.total, totals: representation.totals
+      }
+    };
+  }
+
+  async folioUsage(documentCode) {
+    const caf = configuredCaf(this.config, documentCode);
+    if (!caf) return null;
+    const usage = await this.folioStore.peek({ caf });
+    return { ...usage, from: caf.from, to: caf.to, documentType: caf.documentType, authorizedAt: caf.authorizedAt };
   }
 
   async issue(input) {
@@ -141,6 +192,10 @@ export class IssueService {
 
     const certificateCredentials = this.#getCertificateCredentials();
     if (this.config.mode === 'certification' && !certificateCredentials) throw httpError(503, 'SII_CERT_PFX_BASE64 es obligatorio en certificación.');
+
+    if (!this.config.sii?.certificationSubmissionEnabled) {
+      throw httpError(423, 'Envío de certificación bloqueado (SII_CERTIFICATION_SUBMISSION_ENABLED=false). No se reservó folio ni se emitió documento. Actívalo explícitamente para continuar.');
+    }
 
     const reservation = await this.folioStore.reserve({ caf, idempotencyKey: document.idempotencyKey, payloadHash, timestamp: new Date().toISOString() });
     const ted = buildTed({ document, issuer: this.config.issuer, caf, folio: reservation.folio, timestamp: reservation.timestamp, timeZone: this.config.timeZone });

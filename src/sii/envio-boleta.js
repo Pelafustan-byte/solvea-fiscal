@@ -44,6 +44,27 @@ export function splitRut(rut) {
   return { normalized, body: match[1], dv: match[2] };
 }
 
+function subTotalsXml(dteList) {
+  const counts = new Map();
+  for (const dte of dteList) {
+    const match = dte.match(/<TipoDTE>(\d+)<\/TipoDTE>/);
+    if (!match) throw httpError(422, 'No se pudo determinar TipoDTE de un DTE del set.');
+    const tipo = Number(match[1]);
+    counts.set(tipo, (counts.get(tipo) || 0) + 1);
+  }
+  return [...counts.entries()]
+    .sort(([a], [b]) => a - b)
+    .map(([tipo, count]) => `<SubTotDTE><TpoDTE>${tipo}</TpoDTE><NroDTE>${count}</NroDTE></SubTotDTE>`)
+    .join('');
+}
+
+function caratulaXml({ issuer, sender, receiver, resolutionDate, resolutionNumber, tmst, dteList }) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(resolutionDate || ''))) throw httpError(422, 'SII_FCH_RESOL debe usar AAAA-MM-DD.');
+  const nroResol = Number(resolutionNumber);
+  if (!Number.isInteger(nroResol) || nroResol < 0 || nroResol > 999999) throw httpError(422, 'SII_NRO_RESOL inválido.');
+  return `<Caratula version="1.0"><RutEmisor>${issuer}</RutEmisor><RutEnvia>${sender}</RutEnvia><RutReceptor>${receiver}</RutReceptor><FchResol>${resolutionDate}</FchResol><NroResol>${nroResol}</NroResol><TmstFirmaEnv>${tmst}</TmstFirmaEnv>${subTotalsXml(dteList)}</Caratula>`;
+}
+
 export function buildUnsignedEnvioBoleta({
   dteXml,
   documentType,
@@ -56,18 +77,47 @@ export function buildUnsignedEnvioBoleta({
   timestamp = new Date(),
   timeZone = 'America/Santiago'
 }) {
+  if (![39, 41].includes(Number(documentType))) throw httpError(422, 'EnvioBOLETA sólo admite TipoDTE 39 o 41 en esta fase.');
   const issuer = splitRut(issuerRut).normalized;
   const sender = splitRut(senderRut).normalized;
   const receiver = splitRut(siiReceiverRut).normalized;
-  if (![39, 41].includes(Number(documentType))) throw httpError(422, 'EnvioBOLETA sólo admite TipoDTE 39 o 41 en esta fase.');
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(resolutionDate || ''))) throw httpError(422, 'SII_FCH_RESOL debe usar AAAA-MM-DD.');
-  const nroResol = Number(resolutionNumber);
-  if (!Number.isInteger(nroResol) || nroResol < 0 || nroResol > 999999) throw httpError(422, 'SII_NRO_RESOL inválido.');
   const id = safeId(setId);
   const dte = stripXmlDeclaration(dteXml);
   if (!/^<DTE\b/i.test(dte)) throw httpError(422, 'El contenido a enviar no es un DTE válido.');
   const tmst = siiTimestamp(timestamp, timeZone);
-  return `<?xml version="1.0" encoding="ISO-8859-1"?>\n<EnvioBOLETA xmlns="http://www.sii.cl/SiiDte" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="1.0" xsi:schemaLocation="http://www.sii.cl/SiiDte EnvioBOLETA_v11.xsd"><SetDTE ID="${id}"><Caratula version="1.0"><RutEmisor>${issuer}</RutEmisor><RutEnvia>${sender}</RutEnvia><RutReceptor>${receiver}</RutReceptor><FchResol>${resolutionDate}</FchResol><NroResol>${nroResol}</NroResol><TmstFirmaEnv>${tmst}</TmstFirmaEnv><SubTotDTE><TpoDTE>${Number(documentType)}</TpoDTE><NroDTE>1</NroDTE></SubTotDTE></Caratula>${dte}</SetDTE></EnvioBOLETA>`;
+  const caratula = caratulaXml({ issuer, sender, receiver, resolutionDate, resolutionNumber, tmst, dteList: [dte] });
+  return `<?xml version="1.0" encoding="ISO-8859-1"?>\n<EnvioBOLETA xmlns="http://www.sii.cl/SiiDte" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="1.0" xsi:schemaLocation="http://www.sii.cl/SiiDte EnvioBOLETA_v11.xsd"><SetDTE ID="${id}">${caratula}${dte}</SetDTE></EnvioBOLETA>`;
+}
+
+/**
+ * Empaqueta VARIOS DTE (ya firmados individualmente) en un solo sobre EnvioBOLETA/SetDTE.
+ * Pensado para preparar/validar el "Set de Boletas" de certificación antes de enviarlo —
+ * esta función NO envía nada al SII por sí misma.
+ */
+export function buildUnsignedEnvioBoletaSet({
+  dteXmlList,
+  issuerRut,
+  senderRut,
+  siiReceiverRut = '60803000-K',
+  resolutionDate,
+  resolutionNumber,
+  setId,
+  timestamp = new Date(),
+  timeZone = 'America/Santiago'
+}) {
+  if (!Array.isArray(dteXmlList) || !dteXmlList.length) throw httpError(422, 'dteXmlList debe tener al menos un DTE.');
+  const issuer = splitRut(issuerRut).normalized;
+  const sender = splitRut(senderRut).normalized;
+  const receiver = splitRut(siiReceiverRut).normalized;
+  const id = safeId(setId);
+  const dtes = dteXmlList.map((xml) => {
+    const dte = stripXmlDeclaration(xml);
+    if (!/^<DTE\b/i.test(dte)) throw httpError(422, 'El contenido a enviar no es un DTE válido.');
+    return dte;
+  });
+  const tmst = siiTimestamp(timestamp, timeZone);
+  const caratula = caratulaXml({ issuer, sender, receiver, resolutionDate, resolutionNumber, tmst, dteList: dtes });
+  return `<?xml version="1.0" encoding="ISO-8859-1"?>\n<EnvioBOLETA xmlns="http://www.sii.cl/SiiDte" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="1.0" xsi:schemaLocation="http://www.sii.cl/SiiDte EnvioBOLETA_v11.xsd"><SetDTE ID="${id}">${caratula}${dtes.join('')}</SetDTE></EnvioBOLETA>`;
 }
 
 export function verifyEnvioBoletaSignature(xml, certificatePem, setId) {

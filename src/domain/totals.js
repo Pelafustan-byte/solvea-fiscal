@@ -57,7 +57,8 @@ export function publicRepresentation({ document, issuer, folio = '', issuedAt = 
       activity: String(document.recipient?.activity || ''),
       address: String(document.recipient?.address || ''),
       commune: String(document.recipient?.commune || ''),
-      city: String(document.recipient?.city || '')
+      city: String(document.recipient?.city || ''),
+      email: String(document.recipient?.email || '')
     } : undefined,
     sale: {
       id: document.sale.id,

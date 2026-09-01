@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { computeTaxTotals, publicRepresentation } from '../src/domain/totals.js';
+import { validateIssueRequest } from '../src/domain/tax-document.js';
 
 const issuer = {
   rut: '76123456-7',
@@ -48,4 +49,33 @@ test('representación conserva detalle de carrito y resumen tributario', () => {
   assert.equal(value.items[0].subtotal, 22500);
   assert.deepEqual(value.totals, { net: 18908, exempt: 0, vatRate: 19, vat: 3592, total: 22500 });
   assert.equal(value.issuer.rut, issuer.rut);
+});
+
+test('boleta oculta receptor extendido en la representación pública (kind boleta)', () => {
+  const value = publicRepresentation({ document: document(), issuer, folio: 12 });
+  assert.equal(value.kind, 'boleta');
+  assert.equal(value.recipient, undefined);
+});
+
+test('factura expone receptor extendido con email opcional en la representación', () => {
+  const facturaDoc = validateIssueRequest({
+    idempotencyKey: 'fac-email-1',
+    documentType: 'factura_afecta',
+    sale: { id: 'F-1', number: 'F-1', total: 1190, paymentMethod: 'efectivo', completedAt: '2026-09-01T12:00:00-04:00' },
+    recipient: { rut: '77808406-6', legalName: 'Cliente SPA', activity: 'Giro', address: 'Dir 1', commune: 'Comuna', email: 'cliente@empresa.cl' },
+    items: [{ name: 'Producto', quantity: 1, unitPrice: 1190, subtotal: 1190 }]
+  });
+  const value = publicRepresentation({ document: facturaDoc, issuer, folio: 5 });
+  assert.equal(value.kind, 'factura');
+  assert.equal(value.recipient.email, 'cliente@empresa.cl');
+});
+
+test('rechaza recipient.email con formato inválido', () => {
+  assert.throws(() => validateIssueRequest({
+    idempotencyKey: 'fac-email-bad',
+    documentType: 'factura_afecta',
+    sale: { id: 'F-2', number: 'F-2', total: 1190, paymentMethod: 'efectivo', completedAt: '2026-09-01T12:00:00-04:00' },
+    recipient: { rut: '77808406-6', legalName: 'Cliente SPA', activity: 'Giro', address: 'Dir 1', commune: 'Comuna', email: 'no-es-un-correo' },
+    items: [{ name: 'Producto', quantity: 1, unitPrice: 1190, subtotal: 1190 }]
+  }), /email/);
 });
