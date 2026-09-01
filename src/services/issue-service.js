@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { extractPfxCredentials } from '../crypto/pfx.js';
 import { validateIssueRequest, paymentCode } from '../domain/tax-document.js';
+import { publicRepresentation } from '../domain/totals.js';
 import { SiiAuthClient } from '../sii/auth-client.js';
 import { SiiBoletaClient } from '../sii/boleta-client.js';
 import { assertCafCompatible, decodeCafBase64, parseCaf } from '../sii/caf.js';
@@ -59,20 +60,14 @@ export class IssueService {
 
   #getAuthClient() {
     if (!this.authClient) {
-      this.authClient = new SiiAuthClient({
-        baseUrl: this.config.sii?.authBaseUrl,
-        timeoutMs: this.config.sii?.timeoutMs
-      });
+      this.authClient = new SiiAuthClient({ baseUrl: this.config.sii?.authBaseUrl, timeoutMs: this.config.sii?.timeoutMs });
     }
     return this.authClient;
   }
 
   #getBoletaClient() {
     if (!this.boletaClient) {
-      this.boletaClient = new SiiBoletaClient({
-        baseUrl: this.config.sii?.boletaBaseUrl,
-        timeoutMs: this.config.sii?.timeoutMs
-      });
+      this.boletaClient = new SiiBoletaClient({ baseUrl: this.config.sii?.boletaBaseUrl, timeoutMs: this.config.sii?.timeoutMs });
     }
     return this.boletaClient;
   }
@@ -118,12 +113,14 @@ export class IssueService {
     if (!caf) {
       if (this.config.mode !== 'development') throw httpError(503, `Falta CAF de certificación para TipoDTE ${document.documentCode}.`);
       const xml = buildUnsignedBoletaDraft({ document, issuer: this.config.issuer, paymentMethodCode: paymentCode(document.sale.paymentMethod), timeZone: this.config.timeZone });
+      const representation = publicRepresentation({ document, issuer: this.config.issuer });
       const response = {
         id: externalId, externalId, status: 'processing', folio: '', xml, pdfUrl: '',
         sii: { submitted: false, trackId: '', accepted: false }, development: true,
         fiscalStage: 'draft_without_caf',
         warning: 'Borrador sin validez tributaria. No contiene CAF, TED, firma XML ni recepción SII.',
-        document: { type: document.documentType, code: document.documentCode, saleId: document.sale.id, saleNumber: document.sale.number, total: document.sale.total }
+        representation,
+        document: { type: document.documentType, code: document.documentCode, saleId: document.sale.id, saleNumber: document.sale.number, total: document.sale.total, totals: representation.totals }
       };
       this.#records.set(document.idempotencyKey, { payloadHash, response });
       return response;
@@ -145,6 +142,7 @@ export class IssueService {
     });
     const signed = certificateCredentials ? signDteXml({ xml: preparedXml, credentials: certificateCredentials }) : null;
     const dteXml = signed?.xml || preparedXml;
+    const representation = publicRepresentation({ document, issuer: this.config.issuer, folio: reservation.folio, issuedAt: reservation.timestamp });
 
     const baseResponse = {
       id: externalId, externalId, status: 'processing', folio: String(reservation.folio), xml: dteXml, pdfUrl: '',
@@ -159,7 +157,8 @@ export class IssueService {
         certificateFingerprint256: certificateCredentials.fingerprint256,
         certificateValidFrom: certificateCredentials.validFrom, certificateValidTo: certificateCredentials.validTo
       } : { verified: false },
-      document: { type: document.documentType, code: document.documentCode, saleId: document.sale.id, saleNumber: document.sale.number, total: document.sale.total }
+      representation,
+      document: { type: document.documentType, code: document.documentCode, saleId: document.sale.id, saleNumber: document.sale.number, total: document.sale.total, totals: representation.totals }
     };
 
     if (!this.config.sii?.networkEnabled) {
