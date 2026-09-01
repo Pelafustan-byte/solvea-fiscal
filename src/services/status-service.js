@@ -18,11 +18,12 @@ function cleanKey(value) {
 export class StatusService {
   #credentials;
 
-  constructor(config, { submissionStore, authClient, boletaClient } = {}) {
+  constructor(config, { submissionStore, authClient, boletaClient, credentials } = {}) {
     this.config = config;
     this.submissionStore = submissionStore || createSubmissionStore(config);
     this.authClient = authClient || null;
     this.boletaClient = boletaClient || null;
+    this.#credentials = credentials;
   }
 
   #getCredentials() {
@@ -84,6 +85,7 @@ export class StatusService {
       : status.rejected
         ? `El SII rechazó el envío${status.glosa ? `: ${status.glosa}` : '.'}`
         : `El SII aún procesa el envío${status.estado ? ` (${status.estado})` : ''}.`;
+    const checkedAt = new Date().toISOString();
 
     const response = {
       ...previous,
@@ -103,11 +105,11 @@ export class StatusService {
         aceptados: status.aceptados,
         rechazados: status.rechazados,
         reparos: status.reparos,
-        checkedAt: new Date().toISOString()
+        checkedAt
       },
       statusCheck: {
         refreshed: true,
-        checkedAt: new Date().toISOString()
+        checkedAt
       }
     };
 
@@ -120,9 +122,9 @@ export class StatusService {
         glosa: status.glosa,
         accepted: status.accepted,
         rejected: status.rejected,
-        checkedAt: response.sii.checkedAt
+        checkedAt
       },
-      updatedAt: new Date().toISOString()
+      updatedAt: checkedAt
     });
 
     return response;
