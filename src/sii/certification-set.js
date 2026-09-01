@@ -159,7 +159,7 @@ export async function validateCertificationSet(config, preparedResults) {
  *
  * Estados devueltos: pendiente | preparado | validado.
  */
-export function prepareCertificationRcof(config, preparedResults) {
+export function prepareCertificationRcof(config, preparedResults, { runFolios } = {}) {
   const errors = [];
   if (preparedResults.some((r) => r.error)) errors.push('Hay casos del set con error; no se puede preparar el RCOF.');
 
@@ -174,8 +174,13 @@ export function prepareCertificationRcof(config, preparedResults) {
   if (!config.sii?.resolutionDate || config.sii?.resolutionNumber === '') errors.push('SII_FCH_RESOL/SII_NRO_RESOL no configurados.');
   if (!config.issuer?.rut) errors.push('SII_RUT_EMISOR no configurado.');
 
+  const isReal = Array.isArray(runFolios) && runFolios.length > 0;
+  if (isReal && runFolios.length !== preparedResults.length) {
+    errors.push('La cantidad de folios reales de la corrida no coincide con la cantidad de casos.');
+  }
+
   if (errors.length) {
-    return { status: 'pendiente', errors, xml: null, signed: false, preview: true, folios: null };
+    return { status: 'pendiente', errors, xml: null, signed: false, preview: !isReal, folios: null };
   }
 
   const totals = preparedResults.reduce((acc, r) => ({
@@ -185,14 +190,14 @@ export function prepareCertificationRcof(config, preparedResults) {
     total: acc.total + (r.totals?.total || 0)
   }), { net: 0, exempt: 0, vat: 0, total: 0 });
 
-  const previewFolios = preparedResults.map((_, index) => caf.from + index);
+  const previewFolios = isReal ? runFolios : preparedResults.map((_, index) => caf.from + index);
   const today = new Date().toISOString().slice(0, 10);
   const rutDigits = String(config.issuer.rut).replace(/[^0-9Kk]/g, '');
 
   let xml;
   try {
     xml = buildUnsignedConsumoFolios({
-      documentoId: `RCOF_CERT_${rutDigits}_${today.replace(/-/g, '')}`,
+      documentoId: `RCOF_CERT_${isReal ? 'REAL' : 'PREVIEW'}_${rutDigits}_${today.replace(/-/g, '')}`,
       issuerRut: config.issuer.rut,
       senderRut: config.sii.senderRut,
       resolutionDate: config.sii.resolutionDate,
@@ -213,7 +218,7 @@ export function prepareCertificationRcof(config, preparedResults) {
       }]
     });
   } catch (error) {
-    return { status: 'pendiente', errors: [error.message], xml: null, signed: false, preview: true, folios: null };
+    return { status: 'pendiente', errors: [error.message], xml: null, signed: false, preview: !isReal, folios: null };
   }
 
   let signed = false;
@@ -238,8 +243,16 @@ export function prepareCertificationRcof(config, preparedResults) {
     errors,
     xml,
     signed,
-    preview: true,
+    preview: !isReal,
     folios: { from: previewFolios[0], to: previewFolios.at(-1) },
     totals
   };
+}
+
+/**
+ * Mapping CASO-i -> folio que se USARÍA si el set se emitiera ahora mismo, sin reservar nada.
+ * Sólo para mostrar en UI antes de un envío real.
+ */
+export function previewFolioMapping(caf) {
+  return CERTIFICATION_CASES.map((definition, index) => ({ caso: definition.caso, folio: caf.from + index }));
 }
