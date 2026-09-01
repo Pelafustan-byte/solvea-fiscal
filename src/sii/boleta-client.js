@@ -7,15 +7,31 @@ function httpError(status, message, detail = {}) {
   return error;
 }
 
-async function parseResponse(response) {
+function sanitizedBodyPreview(body) {
+  // Sólo texto de respuesta del SII, nunca datos de nuestra propia petición: no puede
+  // contener token/cookie/PFX/CAF/RSASK/password nuestros. Se trunca a 1000 caracteres.
+  return String(body || '').slice(0, 1000);
+}
+
+function upstreamDiagnostics(response, endpoint, body) {
+  return {
+    httpStatus: response.status,
+    contentType: response.headers.get('content-type') || '',
+    bodyPreview: sanitizedBodyPreview(body),
+    endpoint,
+    timestamp: new Date().toISOString()
+  };
+}
+
+async function parseResponse(response, endpoint) {
   const body = await response.text();
   let data;
   try {
     data = body ? JSON.parse(body) : {};
   } catch {
-    throw httpError(502, 'SII respondió contenido no JSON en API de boletas.', { status: response.status, body: body.slice(0, 1000) });
+    throw httpError(502, 'SII respondió contenido no JSON en API de boletas.', upstreamDiagnostics(response, endpoint, body));
   }
-  if (!response.ok) throw httpError(502, `SII respondió HTTP ${response.status}.`, { status: response.status, data });
+  if (!response.ok) throw httpError(502, `SII respondió HTTP ${response.status}.`, { ...upstreamDiagnostics(response, endpoint, body), data });
   return data;
 }
 
@@ -114,7 +130,7 @@ export class SiiBoletaClient {
       body: form,
       signal: AbortSignal.timeout(this.timeoutMs)
     });
-    const data = await parseResponse(response);
+    const data = await parseResponse(response, '/boleta.electronica.envio');
     const trackId = String(data.trackid ?? data.trackId ?? '').trim();
     if (!/^\d{1,20}$/.test(trackId)) throw httpError(502, 'SII no devolvió Track ID válido.', { data });
     return {
@@ -139,7 +155,7 @@ export class SiiBoletaClient {
       headers: { accept: 'application/json', cookie: `TOKEN=${authToken}`, 'user-agent': 'SOLVEA-Fiscal/0.6' },
       signal: AbortSignal.timeout(this.timeoutMs)
     });
-    const data = await parseResponse(response);
+    const data = await parseResponse(response, `/boleta.electronica.envio/${companyKey}-${track}`);
     return normalizeSubmissionStatus(data, track);
   }
 }

@@ -268,6 +268,13 @@ export function createApp(config) {
         return json(res, 200, { run });
       }
 
+      if (req.method === 'POST' && url.pathname === '/v1/certification/folios/check') {
+        if (!authorized(req, config)) return json(res, 401, { error: 'No autorizado.' });
+        const body = await readJson(req).catch(() => ({}));
+        const result = await certificationSubmissionService.checkFolios({ folios: body.folios });
+        return json(res, 200, result);
+      }
+
       return json(res, 404, { error: 'Ruta no encontrada.' });
     } catch (error) {
       return json(res, Number(error.status) || 500, {

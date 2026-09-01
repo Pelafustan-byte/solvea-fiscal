@@ -354,3 +354,114 @@ test('RCOF real: al existir una corrida con folios reservados, usa 46-50 en vez 
     assert.match(rcof.xml, /<Inicial>46<\/Inicial><Final>50<\/Final>/);
   });
 });
+
+function fakeLookupClient(resultByFolio) {
+  return {
+    checkDocuments: async ({ folios }) => folios.map((folio) => resultByFolio[folio] || { folio, result: 'UNKNOWN', codigo: '', descripcion: '' })
+  };
+}
+
+test('checkFolios: consulta el SII sin reservar folios ni tocar folio-state', async () => {
+  await withEnv({}, async ({ config, folioStore, runStore }) => {
+    const lookupClient = fakeLookupClient({
+      46: { folio: 46, result: 'NOT_FOUND', codigo: 'FAU', descripcion: 'Documento No Recibido por el SII' },
+      47: { folio: 47, result: 'NOT_FOUND', codigo: 'FAU', descripcion: '' },
+      48: { folio: 48, result: 'NOT_FOUND', codigo: 'FAU', descripcion: '' },
+      49: { folio: 49, result: 'NOT_FOUND', codigo: 'FAU', descripcion: '' },
+      50: { folio: 50, result: 'NOT_FOUND', codigo: 'FAU', descripcion: '' }
+    });
+    const service = new CertificationSubmissionService(config, { folioStore, runStore, authClient: fakeAuthClient(), lookupClient });
+    const { source, results } = await service.checkFolios();
+    assert.equal(source, 'preview');
+    assert.deepEqual(results.map((r) => r.folio), [46, 47, 48, 49, 50]);
+    assert.ok(results.every((r) => r.result === 'NOT_FOUND'));
+
+    const caf = configuredCaf(config, 39);
+    const usage = await folioStore.peek({ caf });
+    assert.equal(usage.used, 0, 'checkFolios no debe reservar folios');
+    const run = await service.getRun(certificationRunId(caf));
+    assert.equal(run, null, 'checkFolios no debe crear ninguna corrida');
+  });
+});
+
+test('checkFolios: no llama nunca a boletaClient.submit (no envía, sólo consulta)', async () => {
+  await withEnv({}, async ({ config, folioStore, runStore }) => {
+    let submitCalled = false;
+    const boletaClient = { submit: async () => { submitCalled = true; return {}; }, getSubmissionStatus: async () => ({}) };
+    const lookupClient = fakeLookupClient({});
+    const service = new CertificationSubmissionService(config, { folioStore, runStore, authClient: fakeAuthClient(), boletaClient, lookupClient });
+    await service.checkFolios();
+    assert.equal(submitCalled, false);
+  });
+});
+
+test('checkFolios: si ya existe una corrida real, consulta esos folios (no el rango preview)', async () => {
+  await withEnv({ sii: { certificationSubmissionEnabled: true } }, async ({ config, folioStore, runStore }) => {
+    const submitService = new CertificationSubmissionService(config, { folioStore, runStore, authClient: fakeAuthClient(), boletaClient: fakeBoletaClient() });
+    await submitService.submit();
+
+    let queriedFolios = null;
+    const lookupClient = { checkDocuments: async ({ folios }) => { queriedFolios = folios; return folios.map((folio) => ({ folio, result: 'FOUND', codigo: 'DOK', descripcion: '' })); } };
+    const checkService = new CertificationSubmissionService(config, { folioStore, runStore, authClient: fakeAuthClient(), lookupClient });
+    const { source, results } = await checkService.checkFolios();
+    assert.equal(source, 'run');
+    assert.deepEqual(queriedFolios, [46, 47, 48, 49, 50]);
+    assert.ok(results.every((r) => r.result === 'FOUND'));
+  });
+});
+
+test('run UNCERTAIN preserva diagnóstico upstream (status/content-type/body) sin exponer secretos', async () => {
+  await withEnv({ sii: { certificationSubmissionEnabled: true } }, async ({ config, folioStore, runStore }) => {
+    const boletaClient = {
+      submit: async () => {
+        const error = new Error('SII respondió contenido no JSON en API de boletas.');
+        error.status = 502;
+        error.detail = { httpStatus: 200, contentType: 'text/html; charset=utf-8', bodyPreview: '<html>maintenance</html>', endpoint: '/boleta.electronica.envio', timestamp: '2026-09-01T18:43:50.000Z' };
+        throw error;
+      },
+      getSubmissionStatus: async () => ({})
+    };
+    const service = new CertificationSubmissionService(config, { folioStore, runStore, authClient: fakeAuthClient(), boletaClient });
+    await assert.rejects(() => service.submit());
+
+    const caf = configuredCaf(config, 39);
+    const run = await service.getRun(certificationRunId(caf));
+    assert.equal(run.status, 'UNCERTAIN');
+    assert.equal(run.upstreamDiagnostics.httpStatus, 200);
+    assert.equal(run.upstreamDiagnostics.contentType, 'text/html; charset=utf-8');
+    assert.equal(run.upstreamDiagnostics.bodyPreview, '<html>maintenance</html>');
+    assert.equal(run.upstreamDiagnostics.endpoint, '/boleta.electronica.envio');
+
+    const serialized = JSON.stringify(run);
+    for (const secret of ['solvea-cert-submit-test', 'BEGIN RSA PRIVATE KEY', 'fake-token']) {
+      assert.ok(!serialized.includes(secret), `el run persistido no debe contener "${secret}"`);
+    }
+  });
+});
+
+test('persistencia entre instancias: una segunda instancia de los stores ve lo que escribió la primera (no depende de memoria de proceso)', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'solvea-fiscal-cross-instance-'));
+  try {
+    const caf = { id: 'cross-instance-caf', from: 1, to: 10 };
+
+    const folioStoreA = new FileFolioStore({ stateDir: dir });
+    const batch = await folioStoreA.reserveBatch({ caf, count: 3, runId: 'cross-run' });
+
+    const runStoreA = new FileCertificationRunStore({ stateDir: dir });
+    await runStoreA.put('cross-run', { runId: 'cross-run', status: 'RESERVED', folioFrom: batch.from, folioTo: batch.to });
+
+    // Instancias NUEVAS, como si fuera un proceso/contenedor distinto tras un redeploy.
+    const folioStoreB = new FileFolioStore({ stateDir: dir });
+    const usageFromB = await folioStoreB.peek({ caf });
+    assert.equal(usageFromB.used, 3);
+    const batchFromB = await folioStoreB.getBatch({ runId: 'cross-run' });
+    assert.deepEqual(batchFromB.folios, [1, 2, 3]);
+
+    const runStoreB = new FileCertificationRunStore({ stateDir: dir });
+    const runFromB = await runStoreB.get('cross-run');
+    assert.equal(runFromB.status, 'RESERVED');
+    assert.equal(runFromB.folioFrom, 1);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
