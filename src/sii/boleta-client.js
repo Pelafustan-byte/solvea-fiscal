@@ -25,6 +25,58 @@ function validToken(token) {
   return value;
 }
 
+function deepValue(root, names) {
+  const wanted = new Set(names.map((name) => name.toLowerCase()));
+  const queue = [root];
+  const seen = new Set();
+  while (queue.length) {
+    const current = queue.shift();
+    if (!current || typeof current !== 'object' || seen.has(current)) continue;
+    seen.add(current);
+    for (const [key, value] of Object.entries(current)) {
+      if (wanted.has(key.toLowerCase()) && value !== undefined && value !== null && value !== '') return value;
+      if (value && typeof value === 'object') queue.push(value);
+    }
+  }
+  return '';
+}
+
+function countValue(data, names) {
+  const value = deepValue(data, names);
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.trunc(parsed) : null;
+}
+
+export function normalizeSubmissionStatus(data, trackId = '') {
+  const rawStatus = String(deepValue(data, ['estado_envio', 'estadoEnvio', 'estado', 'status']) || '').trim();
+  const estado = rawStatus.toUpperCase();
+  const glosa = String(deepValue(data, ['glosa', 'desc_estado', 'descEstado', 'descripcion', 'description']) || '').trim();
+  const informados = countValue(data, ['informados', 'total_informados', 'totalInformados']);
+  const aceptados = countValue(data, ['aceptados', 'total_aceptados', 'totalAceptados']);
+  const rechazados = countValue(data, ['rechazados', 'total_rechazados', 'totalRechazados']);
+  const reparos = countValue(data, ['reparos', 'total_reparos', 'totalReparos']);
+
+  const rejectedCodes = new Set(['RSC', 'RFR', 'RFS', 'RCT', 'RCR', 'RDC', 'RCS', 'RECHAZADO', 'REJECTED']);
+  const acceptedByCode = estado === 'EOK';
+  const rejected = rejectedCodes.has(estado) || (rechazados !== null && rechazados > 0 && (aceptados === null || aceptados === 0));
+  const accepted = !rejected && (acceptedByCode || (estado === 'EPR' && aceptados !== null && aceptados > 0 && (rechazados === null || rechazados === 0)));
+  const final = accepted || rejected;
+
+  return {
+    trackId: String(trackId || deepValue(data, ['trackid', 'trackId', 'TRACKID']) || '').trim(),
+    estado,
+    glosa,
+    informados,
+    aceptados,
+    rechazados,
+    reparos,
+    accepted,
+    rejected,
+    final,
+    raw: data
+  };
+}
+
 export function boletaBaseUrlForMode(mode) {
   return mode === 'production' ? 'https://rahue.sii.cl/recursos/v1' : 'https://pangal.sii.cl/recursos/v1';
 }
@@ -57,7 +109,7 @@ export class SiiBoletaClient {
       headers: {
         accept: 'application/json',
         cookie: `TOKEN=${authToken}`,
-        'user-agent': 'SOLVEA-Fiscal/0.5'
+        'user-agent': 'SOLVEA-Fiscal/0.6'
       },
       body: form,
       signal: AbortSignal.timeout(this.timeoutMs)
@@ -84,10 +136,10 @@ export class SiiBoletaClient {
     const companyKey = `${company.body}-${company.dv}`;
     const response = await this.fetch(`${this.baseUrl}/boleta.electronica.envio/${companyKey}-${track}`, {
       method: 'GET',
-      headers: { accept: 'application/json', cookie: `TOKEN=${authToken}`, 'user-agent': 'SOLVEA-Fiscal/0.5' },
+      headers: { accept: 'application/json', cookie: `TOKEN=${authToken}`, 'user-agent': 'SOLVEA-Fiscal/0.6' },
       signal: AbortSignal.timeout(this.timeoutMs)
     });
     const data = await parseResponse(response);
-    return { trackId: track, raw: data };
+    return normalizeSubmissionStatus(data, track);
   }
 }
