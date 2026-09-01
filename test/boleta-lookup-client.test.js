@@ -101,3 +101,16 @@ test('checkDocuments: consulta varios folios en secuencia y conserva el orden', 
   assert.deepEqual(results.map((r) => r.folio), [46, 47, 48, 49, 50]);
   assert.equal(seen.length, 5);
 });
+
+test('checkDocuments: admite {folio, monto} por entrada para consultar cada caso con su total real', async () => {
+  const seen = [];
+  const fetchImpl = async (url) => { seen.push(url); return jsonResponse({ codigo: 'FAU', descripcion: '' }); };
+  const client = new SiiBoletaLookupClient({ baseUrl: 'https://apicert.sii.cl/recursos/v1', fetchImpl });
+  await client.checkDocuments({
+    token: 'fake-token-1234', issuerRut: '77808406-6', documentType: 39,
+    receptorRut: '66666666-6', fechaEmision: '01-09-2026',
+    folios: [{ folio: 46, monto: 29800 }, { folio: 47, monto: 2040 }]
+  });
+  assert.match(seen[0], /46\/estado\?rut_receptor=66666666&dv_receptor=6&monto=29800&fechaEmision=01-09-2026/);
+  assert.match(seen[1], /47\/estado\?rut_receptor=66666666&dv_receptor=6&monto=2040&fechaEmision=01-09-2026/);
+});

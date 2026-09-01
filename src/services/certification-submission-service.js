@@ -281,7 +281,7 @@ export class CertificationSubmissionService {
    * preview (folios que se usarían si se emitiera ahora). No requiere el safety lock: es una
    * operación de sólo lectura hacia el SII.
    */
-  async checkFolios({ folios, receptorRut } = {}) {
+  async checkFolios({ folios, receptorRut, fechaEmision } = {}) {
     const caf = configuredCaf(this.config, 39);
     if (!caf) throw httpError(503, 'CAF 39 no configurado.');
     if (!this.config.sii?.networkEnabled) throw httpError(503, 'SII_NETWORK_ENABLED=false: no se puede consultar folios en el SII.');
@@ -291,9 +291,20 @@ export class CertificationSubmissionService {
 
     const runId = certificationRunId(caf);
     const run = await this.runStore.get(runId);
-    const targetFolios = Array.isArray(folios) && folios.length
-      ? folios
-      : (run?.mapping ? run.mapping.map((m) => m.folio) : CERTIFICATION_CASES.map((_, i) => caf.from + i));
+    // Mapping folio -> monto real del CASO oficial correspondiente (29800/2040/4100/14720/3500),
+    // necesario porque el servidor de certificación exige `monto` en la práctica (ver
+    // boleta-lookup-client.js). Si el caller pasa `folios` explícito, se usa tal cual (sin monto
+    // por-folio salvo que el propio caller ya lo incluya como {folio, monto}).
+    const defaultEntries = (run?.mapping || CERTIFICATION_CASES.map((definition, i) => ({ caso: definition.caso, folio: caf.from + i })))
+      .map(({ caso, folio }) => ({ folio, monto: certificationCaseRequest(caso).sale.total }));
+    const targetFolios = Array.isArray(folios) && folios.length ? folios : defaultEntries;
+
+    const defaultFechaEmision = fechaEmision || (() => {
+      const now = new Date();
+      const dd = String(now.getUTCDate()).padStart(2, '0');
+      const mm = String(now.getUTCMonth() + 1).padStart(2, '0');
+      return `${dd}-${mm}-${now.getUTCFullYear()}`;
+    })();
 
     const authentication = await this.#getAuthClient().authenticate(credentials);
     const results = await this.#getLookupClient().checkDocuments({
@@ -305,7 +316,8 @@ export class CertificationSubmissionService {
       // Los casos oficiales del set (CASO-1..5) no llevan receptor -> usan el RUT genérico de
       // "Consumidor Final" que ya es el default de buildUnsignedBoletaDraft para boleta_afecta
       // sin receptor (ver unsigned-boleta.js).
-      receptorRut: receptorRut || '66666666-6'
+      receptorRut: receptorRut || '66666666-6',
+      fechaEmision: defaultFechaEmision
     });
     return { source: run?.mapping ? 'run' : 'preview', results };
   }
