@@ -1,23 +1,17 @@
+import { computeTaxTotals } from '../domain/totals.js';
 import { tag } from '../lib/xml.js';
 import { siiDate, siiTimestamp } from './ted.js';
-
-const IVA_RATE = 0.19;
 
 function detailXml(item, index) {
   return `<Detalle>${tag('NroLinDet', index + 1)}${item.sku ? `<CdgItem>${tag('TpoCodigo', 'INT1')}${tag('VlrCodigo', item.sku)}</CdgItem>` : ''}${item.exempt ? tag('IndExe', 1) : ''}${tag('NmbItem', item.name)}${tag('QtyItem', item.quantity)}${item.unitMeasure ? tag('UnmdItem', item.unitMeasure) : ''}${tag('PrcItem', item.unitPrice)}${tag('MontoItem', item.subtotal)}</Detalle>`;
 }
 
 function totalsXml(document) {
+  const totals = computeTaxTotals(document);
   if (document.documentCode === 41) {
-    return `<Totales>${tag('MntExe', document.sale.total)}${tag('MntTotal', document.sale.total)}</Totales>`;
+    return `<Totales>${tag('MntExe', totals.exempt)}${tag('MntTotal', totals.total)}</Totales>`;
   }
-
-  const exemptGross = document.items.reduce((sum, item) => sum + (item.exempt ? item.subtotal : 0), 0);
-  const affectedGross = document.sale.total - exemptGross;
-  const net = Math.round(affectedGross / (1 + IVA_RATE));
-  const iva = affectedGross - net;
-
-  return `<Totales>${tag('MntNeto', net)}${exemptGross > 0 ? tag('MntExe', exemptGross) : ''}${tag('IVA', iva)}${tag('MntTotal', document.sale.total)}</Totales>`;
+  return `<Totales>${tag('MntNeto', totals.net)}${totals.exempt > 0 ? tag('MntExe', totals.exempt) : ''}${tag('IVA', totals.vat)}${tag('MntTotal', totals.total)}</Totales>`;
 }
 
 function referenceXml(reference) {
