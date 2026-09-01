@@ -69,8 +69,13 @@ function multipartFieldPart(boundary, name, value) {
  * Mismo probe (mismos 4 campos, sin archivo) pero con node:https nativo, para descartar que el
  * 401 sea un problema de la implementación de fetch/undici en vez de una respuesta real del SII.
  * https.request nunca sigue redirecciones automáticamente por diseño.
+ *
+ * Acepta opcionalmente `cert`/`key` (PEM) para probar TLS mutuo (mTLS): algunos webservices DTE
+ * legacy del SII exigen que el cliente presente el certificado digital en el handshake TLS,
+ * además del token por cookie — algo que un spec OpenAPI típicamente no documenta porque es un
+ * requisito de transporte, no de la capa HTTP.
  */
-export function probePangalAuthHttps({ pangalBaseUrl, token, senderRut, companyRut, timeoutMs = 15_000, requestImpl = https.request }) {
+export function probePangalAuthHttps({ pangalBaseUrl, token, senderRut, companyRut, timeoutMs = 15_000, requestImpl = https.request, cert, key }) {
   const sender = splitRut(senderRut);
   const company = splitRut(companyRut);
   const boundary = `----solveaFiscalProbe${Date.now()}`;
@@ -96,13 +101,15 @@ export function probePangalAuthHttps({ pangalBaseUrl, token, senderRut, companyR
         'content-type': `multipart/form-data; boundary=${boundary}`,
         'content-length': body.length
       },
-      timeout: timeoutMs
+      timeout: timeoutMs,
+      ...(cert && key ? { cert, key } : {})
     }, (res) => {
       let data = '';
       res.on('data', (chunk) => { data += chunk; });
       res.on('end', () => {
         resolve({
           client: 'https.request',
+          mtls: Boolean(cert && key),
           httpStatus: res.statusCode,
           redirected: Boolean(res.statusCode >= 300 && res.statusCode < 400),
           location: res.headers.location || '',
@@ -112,8 +119,8 @@ export function probePangalAuthHttps({ pangalBaseUrl, token, senderRut, companyR
         });
       });
     });
-    req.on('error', (error) => resolve({ client: 'https.request', httpStatus: null, reason: `network_error: ${error.message}`, ...tokenMeta(token) }));
-    req.on('timeout', () => { req.destroy(); resolve({ client: 'https.request', httpStatus: null, reason: 'timeout', ...tokenMeta(token) }); });
+    req.on('error', (error) => resolve({ client: 'https.request', mtls: Boolean(cert && key), httpStatus: null, reason: `network_error: ${error.message}`, ...tokenMeta(token) }));
+    req.on('timeout', () => { req.destroy(); resolve({ client: 'https.request', mtls: Boolean(cert && key), httpStatus: null, reason: 'timeout', ...tokenMeta(token) }); });
     req.write(body);
     req.end();
   });
@@ -124,11 +131,16 @@ export function probePangalAuthHttps({ pangalBaseUrl, token, senderRut, companyR
  * sigue, no compara con https.request todavía). Si no hay redirección, corre también el probe
  * con https.request para poder comparar. Nunca incluye archivo/XML/DTE/CAF.
  */
-export async function diagnosePangalAuth({ pangalBaseUrl, token, senderRut, companyRut, fetchImpl, requestImpl, timeoutMs }) {
+export async function diagnosePangalAuth({ pangalBaseUrl, token, senderRut, companyRut, fetchImpl, requestImpl, timeoutMs, cert, key }) {
   const fetchProbe = await probePangalAuthFetch({ pangalBaseUrl, token, senderRut, companyRut, fetchImpl, timeoutMs });
   if (fetchProbe.redirected) {
-    return { fetchProbe, httpsProbe: null, stoppedOnRedirect: true };
+    return { fetchProbe, httpsProbe: null, httpsMtlsProbe: null, stoppedOnRedirect: true };
   }
   const httpsProbe = await probePangalAuthHttps({ pangalBaseUrl, token, senderRut, companyRut, timeoutMs, requestImpl });
-  return { fetchProbe, httpsProbe, stoppedOnRedirect: false };
+  // Si tenemos certificado/clave del PFX, probamos también CON TLS mutuo, para aislar si pangal
+  // exige el certificado en el handshake además del token por cookie.
+  const httpsMtlsProbe = (cert && key)
+    ? await probePangalAuthHttps({ pangalBaseUrl, token, senderRut, companyRut, timeoutMs, requestImpl, cert, key })
+    : null;
+  return { fetchProbe, httpsProbe, httpsMtlsProbe, stoppedOnRedirect: false };
 }

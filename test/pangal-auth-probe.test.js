@@ -61,8 +61,9 @@ test('diagnosePangalAuth: si el fetch probe detecta redirección, se detiene y N
   assert.equal(httpsCalled, false);
 });
 
-function fakeHttpsRequestImpl({ statusCode, headers = {}, body = '' }) {
+function fakeHttpsRequestImpl({ statusCode, headers = {}, body = '', onOptions } = {}) {
   return (options, callback) => {
+    if (onOptions) onOptions(options);
     const req = new EventEmitter();
     req.write = () => {};
     req.end = () => {
@@ -95,4 +96,50 @@ test('diagnosePangalAuth: mismo token en ambos probes, correlacionable sólo por
   const result = await diagnosePangalAuth({ pangalBaseUrl: 'https://pangal.sii.cl/recursos/v1', token: 'el-mismo-token-real', senderRut: '19105425-3', companyRut: '77808406-6', fetchImpl, requestImpl });
   assert.equal(result.fetchProbe.tokenFingerprint, result.httpsProbe.tokenFingerprint);
   assert.ok(!JSON.stringify(result).includes('el-mismo-token-real'));
+});
+
+test('probePangalAuthHttps: con cert/key envía TLS mutuo (mtls:true) y los reenvía al request nativo', async () => {
+  let capturedOptions = null;
+  const requestImpl = fakeHttpsRequestImpl({
+    statusCode: 400, headers: { 'content-type': 'text/plain' }, body: 'archivo requerido\n',
+    onOptions: (options) => { capturedOptions = options; }
+  });
+  const result = await probePangalAuthHttps({
+    pangalBaseUrl: 'https://pangal.sii.cl/recursos/v1', token: 'fake-token', senderRut: '19105425-3', companyRut: '77808406-6',
+    requestImpl, cert: 'CERT-PEM-FAKE', key: 'KEY-PEM-FAKE'
+  });
+  assert.equal(result.mtls, true);
+  assert.equal(result.httpStatus, 400, 'si mTLS resuelve el 401, la siguiente barrera sería una validación de datos (400), no autenticación');
+  assert.equal(capturedOptions.cert, 'CERT-PEM-FAKE');
+  assert.equal(capturedOptions.key, 'KEY-PEM-FAKE');
+});
+
+test('probePangalAuthHttps: sin cert/key, mtls:false y no se envían opciones de certificado', async () => {
+  let capturedOptions = null;
+  const requestImpl = fakeHttpsRequestImpl({
+    statusCode: 401, headers: { 'content-type': 'text/plain' }, body: 'NO ESTA AUTENTICADO\n',
+    onOptions: (options) => { capturedOptions = options; }
+  });
+  const result = await probePangalAuthHttps({ pangalBaseUrl: 'https://pangal.sii.cl/recursos/v1', token: 'fake-token', senderRut: '19105425-3', companyRut: '77808406-6', requestImpl });
+  assert.equal(result.mtls, false);
+  assert.equal(capturedOptions.cert, undefined);
+  assert.equal(capturedOptions.key, undefined);
+});
+
+test('diagnosePangalAuth: con cert/key corre un tercer probe httpsMtlsProbe además del par habitual', async () => {
+  const fetchImpl = async () => fakeFetchResponse({ status: 401, body: 'NO ESTA AUTENTICADO\n', headers: { 'content-type': 'text/plain' } });
+  const requestImpl = fakeHttpsRequestImpl({ statusCode: 401, headers: { 'content-type': 'text/plain' }, body: 'NO ESTA AUTENTICADO\n' });
+  const result = await diagnosePangalAuth({
+    pangalBaseUrl: 'https://pangal.sii.cl/recursos/v1', token: 'fake-token', senderRut: '19105425-3', companyRut: '77808406-6',
+    fetchImpl, requestImpl, cert: 'CERT-PEM-FAKE', key: 'KEY-PEM-FAKE'
+  });
+  assert.ok(result.httpsMtlsProbe);
+  assert.equal(result.httpsMtlsProbe.mtls, true);
+});
+
+test('diagnosePangalAuth: sin cert/key, httpsMtlsProbe es null (no intenta mTLS por accidente)', async () => {
+  const fetchImpl = async () => fakeFetchResponse({ status: 401, body: 'NO ESTA AUTENTICADO\n', headers: { 'content-type': 'text/plain' } });
+  const requestImpl = fakeHttpsRequestImpl({ statusCode: 401, headers: { 'content-type': 'text/plain' }, body: 'NO ESTA AUTENTICADO\n' });
+  const result = await diagnosePangalAuth({ pangalBaseUrl: 'https://pangal.sii.cl/recursos/v1', token: 'fake-token', senderRut: '19105425-3', companyRut: '77808406-6', fetchImpl, requestImpl });
+  assert.equal(result.httpsMtlsProbe, null);
 });
