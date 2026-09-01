@@ -40,6 +40,22 @@ test('checkDocument: codigo=DOK se traduce a FOUND con la ruta exacta del spec o
   assert.equal(capturedHeaders.cookie, 'TOKEN=fake-token-1234');
 });
 
+test('checkDocument: agrega rut_receptor/dv_receptor a la query cuando se provee receptorRut', async () => {
+  let capturedUrl = '';
+  const fetchImpl = async (url) => { capturedUrl = url; return jsonResponse({ codigo: 'DOK', descripcion: '' }); };
+  const client = new SiiBoletaLookupClient({ baseUrl: 'https://apicert.sii.cl/recursos/v1', fetchImpl });
+  await client.checkDocument({ token: 'fake-token-1234', issuerRut: '77808406-6', documentType: 39, folio: 46, receptorRut: '66666666-6' });
+  assert.equal(capturedUrl, 'https://apicert.sii.cl/recursos/v1/boleta.electronica/77808406-6-39-46/estado?rut_receptor=66666666&dv_receptor=6');
+});
+
+test('checkDocument: sin receptorRut, la query no lleva rut_receptor (respeta el spec, que lo marca opcional)', async () => {
+  let capturedUrl = '';
+  const fetchImpl = async (url) => { capturedUrl = url; return jsonResponse({ codigo: 'DOK', descripcion: '' }); };
+  const client = new SiiBoletaLookupClient({ baseUrl: 'https://apicert.sii.cl/recursos/v1', fetchImpl });
+  await client.checkDocument({ token: 'fake-token-1234', issuerRut: '77808406-6', documentType: 39, folio: 46 });
+  assert.equal(capturedUrl, 'https://apicert.sii.cl/recursos/v1/boleta.electronica/77808406-6-39-46/estado');
+});
+
 test('checkDocument: codigo=FAU se traduce a NOT_FOUND', async () => {
   const fetchImpl = async () => jsonResponse({ codigo: 'FAU', descripcion: 'Documento No Recibido por el SII' });
   const client = new SiiBoletaLookupClient({ baseUrl: 'https://apicert.sii.cl/recursos/v1', fetchImpl });
