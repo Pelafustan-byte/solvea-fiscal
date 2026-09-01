@@ -327,7 +327,9 @@ export function createApp(config) {
           pangalBaseUrl: config.sii?.boletaBaseUrl,
           token: authentication.token,
           senderRut: config.sii?.senderRut,
-          companyRut: config.issuer.rut
+          companyRut: config.issuer.rut,
+          cert: credentials.certificatePem,
+          key: credentials.privateKeyPem
         });
 
         return json(res, 200, {
