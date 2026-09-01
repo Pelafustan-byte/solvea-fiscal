@@ -271,7 +271,7 @@ export function createApp(config) {
       if (req.method === 'POST' && url.pathname === '/v1/certification/folios/check') {
         if (!authorized(req, config)) return json(res, 401, { error: 'No autorizado.' });
         const body = await readJson(req).catch(() => ({}));
-        const result = await certificationSubmissionService.checkFolios({ folios: body.folios });
+        const result = await certificationSubmissionService.checkFolios({ folios: body.folios, receptorRut: body.receptorRut });
         return json(res, 200, result);
       }
 

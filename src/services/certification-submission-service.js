@@ -281,7 +281,7 @@ export class CertificationSubmissionService {
    * preview (folios que se usarían si se emitiera ahora). No requiere el safety lock: es una
    * operación de sólo lectura hacia el SII.
    */
-  async checkFolios({ folios } = {}) {
+  async checkFolios({ folios, receptorRut } = {}) {
     const caf = configuredCaf(this.config, 39);
     if (!caf) throw httpError(503, 'CAF 39 no configurado.');
     if (!this.config.sii?.networkEnabled) throw httpError(503, 'SII_NETWORK_ENABLED=false: no se puede consultar folios en el SII.');
@@ -300,7 +300,12 @@ export class CertificationSubmissionService {
       token: authentication.token,
       issuerRut: this.config.issuer.rut,
       documentType: 39,
-      folios: targetFolios
+      folios: targetFolios,
+      // El servidor de certificación exige rut_receptor pese a figurar opcional en el spec.
+      // Los casos oficiales del set (CASO-1..5) no llevan receptor -> usan el RUT genérico de
+      // "Consumidor Final" que ya es el default de buildUnsignedBoletaDraft para boleta_afecta
+      // sin receptor (ver unsigned-boleta.js).
+      receptorRut: receptorRut || '66666666-6'
     });
     return { source: run?.mapping ? 'run' : 'preview', results };
   }

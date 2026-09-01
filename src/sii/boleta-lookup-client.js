@@ -67,7 +67,7 @@ export class SiiBoletaLookupClient {
    * cualquier problema técnico (HTTP != 200, timeout, red, cuerpo no parseable) devuelve
    * result:'UNKNOWN', nunca 'NOT_FOUND'.
    */
-  async checkDocument({ token, issuerRut, documentType, folio }) {
+  async checkDocument({ token, issuerRut, documentType, folio, receptorRut, monto, fechaEmision }) {
     const authToken = validToken(token);
     const issuer = splitRut(issuerRut);
     const tipo = Number(documentType);
@@ -75,7 +75,20 @@ export class SiiBoletaLookupClient {
     if (!Number.isInteger(tipo) || tipo <= 0) throw httpError(422, 'documentType inválido.');
     if (!Number.isInteger(folioNum) || folioNum <= 0) throw httpError(422, 'folio inválido.');
 
-    const path = `/boleta.electronica/${issuer.body}-${issuer.dv}-${tipo}-${folioNum}/estado`;
+    // rut_receptor/dv_receptor/monto/fechaEmision figuran como opcionales en el spec oficial,
+    // pero en la práctica el servidor de certificación exige al menos rut_receptor/dv_receptor
+    // ("falta rut_receptor") para responder JSON en vez de un mensaje de texto plano.
+    const query = new URLSearchParams();
+    if (receptorRut) {
+      const receptor = splitRut(receptorRut);
+      query.set('rut_receptor', receptor.body);
+      query.set('dv_receptor', receptor.dv);
+    }
+    if (monto !== undefined && monto !== null && monto !== '') query.set('monto', String(monto));
+    if (fechaEmision) query.set('fechaEmision', fechaEmision);
+    const queryString = query.toString();
+
+    const path = `/boleta.electronica/${issuer.body}-${issuer.dv}-${tipo}-${folioNum}/estado${queryString ? `?${queryString}` : ''}`;
     let response;
     try {
       response = await this.fetch(`${this.baseUrl}${path}`, {
@@ -118,11 +131,11 @@ export class SiiBoletaLookupClient {
    * Consulta varios folios en secuencia (no en paralelo, para no disparar rate limiting del
    * SII — la respuesta ya trae headers X-RateLimit-*). Nunca reserva ni envía nada.
    */
-  async checkDocuments({ token, issuerRut, documentType, folios }) {
+  async checkDocuments({ token, issuerRut, documentType, folios, receptorRut, monto, fechaEmision }) {
     const results = [];
     for (const folio of folios) {
       // eslint-disable-next-line no-await-in-loop
-      results.push(await this.checkDocument({ token, issuerRut, documentType, folio }));
+      results.push(await this.checkDocument({ token, issuerRut, documentType, folio, receptorRut, monto, fechaEmision }));
     }
     return results;
   }
