@@ -29,6 +29,7 @@ export function validateIssueRequest(input) {
   if (items.length > 1000) fail('La boleta excede 1000 líneas de detalle.');
 
   let computedTotal = 0;
+  let exemptTotal = 0;
   const normalizedItems = items.map((item, index) => {
     const quantity = Number(item.quantity);
     const unitPrice = money(item.unitPrice);
@@ -37,22 +38,50 @@ export function validateIssueRequest(input) {
     if (!Number.isInteger(unitPrice) || unitPrice < 0) fail(`items[${index}].unitPrice inválido.`);
     if (!Number.isInteger(subtotal) || subtotal < 0) fail(`items[${index}].subtotal inválido.`);
     if (!String(item.name || '').trim()) fail(`items[${index}].name es obligatorio.`);
+
+    const exempt = input.documentType === 'boleta_exenta' ? true : Boolean(item.exempt);
+    const unitMeasure = String(item.unitMeasure ?? item.unit ?? '').trim();
+    if (unitMeasure.length > 4) fail(`items[${index}].unitMeasure excede 4 caracteres.`);
+
     computedTotal += subtotal;
+    if (exempt) exemptTotal += subtotal;
+
     return {
       sku: String(item.sku || '').slice(0, 35),
       name: String(item.name).trim().slice(0, 80),
       quantity,
       unitPrice,
-      subtotal
+      subtotal,
+      exempt,
+      unitMeasure
     };
   });
 
   // El POS puede aplicar descuento a nivel de venta; por eso la suma de líneas puede ser mayor al total.
   if (computedTotal < total) fail('La suma de subtotales de ítems no puede ser menor al total de la venta.');
+  if (exemptTotal > total) fail('La suma de ítems exentos no puede superar el total de la venta.');
+
+  const discount = Math.max(0, money(sale.discount) || 0);
+  const hasAffectedItems = normalizedItems.some((item) => !item.exempt);
+  const hasExemptItems = normalizedItems.some((item) => item.exempt);
+  if (discount > 0 && hasAffectedItems && hasExemptItems) {
+    fail('Las ventas mixtas afectas/exentas con descuento global requieren distribución tributaria por línea.');
+  }
 
   const recipient = input.recipient || {};
   const recipientRut = normalizeRut(recipient.rut);
   if (recipientRut && !isValidRut(recipientRut)) fail('RUT receptor inválido.');
+
+  const rawReference = input.reference || null;
+  let reference = null;
+  if (rawReference) {
+    const code = String(rawReference.code || '').trim();
+    const reason = String(rawReference.reason || '').trim();
+    if (!code || !reason) fail('reference.code y reference.reason son obligatorios cuando se informa referencia.');
+    if (code.length > 18) fail('reference.code excede 18 caracteres.');
+    if (reason.length > 90) fail('reference.reason excede 90 caracteres.');
+    reference = { code, reason };
+  }
 
   return {
     idempotencyKey: String(input.idempotencyKey),
@@ -62,7 +91,7 @@ export function validateIssueRequest(input) {
       id: String(sale.id),
       number: String(sale.number),
       subtotal: money(sale.subtotal) || computedTotal,
-      discount: Math.max(0, money(sale.discount) || 0),
+      discount,
       total,
       paymentMethod: String(sale.paymentMethod || ''),
       completedAt: sale.completedAt || null
@@ -71,7 +100,8 @@ export function validateIssueRequest(input) {
       rut: recipientRut,
       legalName: String(recipient.legalName || '').trim().slice(0, 100)
     },
-    items: normalizedItems
+    items: normalizedItems,
+    reference
   };
 }
 
