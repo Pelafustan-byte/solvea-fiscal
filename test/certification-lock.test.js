@@ -7,7 +7,7 @@ import path from 'node:path';
 import forgeModule from 'node-forge';
 import { IssueService } from '../src/services/issue-service.js';
 import { FileFolioStore } from '../src/services/folio-store.js';
-import { prepareCertificationSet, validateCertificationSet, certificationCaseRequest } from '../src/sii/certification-set.js';
+import { prepareCertificationSet, validateCertificationSet, certificationCaseRequest, prepareCertificationRcof } from '../src/sii/certification-set.js';
 
 const forge = forgeModule?.default || forgeModule;
 
@@ -177,5 +177,40 @@ test('factura (DTE 33/34) sigue bloqueada para envío real (HTTP 501)', async ()
       }),
       (error) => { assert.equal(error.status, 501); assert.match(error.message, /factura/i); return true; }
     );
+  });
+});
+
+test('prepareCertificationRcof: con config completa queda validado (firmado), sin consumir folios', async () => {
+  await withCertificationConfig({}, async ({ issueService, config }) => {
+    const prepared = await prepareCertificationSet(issueService);
+    const rcof = prepareCertificationRcof(config, prepared);
+    assert.equal(rcof.status, 'validado');
+    assert.equal(rcof.signed, true);
+    assert.equal(rcof.errors.length, 0);
+    assert.ok(rcof.xml.includes('<TipoDocumento>39</TipoDocumento>'));
+    assert.equal(rcof.folios.from, 1);
+    assert.equal(rcof.folios.to, 5);
+    const usage = await issueService.folioUsage(39);
+    assert.equal(usage.used, 0, 'preparar el RCOF no debe consumir folios reales');
+  });
+});
+
+test('prepareCertificationRcof: queda pendiente si falta el CAF', async () => {
+  await withCertificationConfig({ credentials: { caf39Base64: '' } }, async ({ issueService, config }) => {
+    const prepared = await prepareCertificationSet(issueService);
+    const rcof = prepareCertificationRcof(config, prepared);
+    assert.equal(rcof.status, 'pendiente');
+    assert.ok(rcof.errors.some((e) => e.includes('CAF 39')));
+    assert.equal(rcof.xml, null);
+  });
+});
+
+test('prepareCertificationRcof: queda preparado (sin firmar) si falta el certificado', async () => {
+  await withCertificationConfig({ credentials: { certificatePfxBase64: '' } }, async ({ issueService, config }) => {
+    const prepared = await prepareCertificationSet(issueService);
+    const rcof = prepareCertificationRcof(config, prepared);
+    assert.equal(rcof.status, 'preparado');
+    assert.equal(rcof.signed, false);
+    assert.ok(rcof.xml);
   });
 });

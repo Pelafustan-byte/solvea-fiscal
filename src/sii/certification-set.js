@@ -1,5 +1,7 @@
 import { issuerMissingFields, submissionMissingFields, configuredCaf } from '../services/issue-service.js';
 import { readiness } from '../config.js';
+import { extractPfxCredentials } from '../crypto/pfx.js';
+import { buildUnsignedConsumoFolios, signConsumoFolios, foliosToRanges } from './consumo-folios.js';
 
 // Datos oficiales del "Set de Pruebas" SII BE (boleta electrónica), casos 1 a 5.
 // Mismos ítems/cantidades/precios que test/certification-set.test.js — no inventar valores nuevos aquí.
@@ -133,7 +135,7 @@ export async function validateCertificationSet(config, preparedResults) {
   const ready = readiness(config);
   if (!ready.submissionReady) errors.push('GET /v1/readiness reporta submissionReady=false.');
 
-  notes.push('RCOF/Resumen de Ventas Diarias: obligación eliminada desde 2022-08-01 (Resolución Ex. SII N°53/2022) — no se genera ni envía por separado. Confirmar con Mesa de Ayuda SII si el correo de certificación aún lo exige.');
+  notes.push('RCOF de certificación: la Resolución Ex. SII N°53/2022 eliminó el envío PERIÓDICO (diario) de este reporte una vez habilitado como emisor, pero el instructivo de certificación vigente sigue exigiendo un RCOF (ConsumoFolios) como parte del set de pruebas. Ver pestaña Certificación / RCOF.');
   if (!config.sii?.certificationSubmissionEnabled) {
     notes.push('SII_CERTIFICATION_SUBMISSION_ENABLED=false: el set puede validarse pero no puede emitirse ni enviarse todavía.');
   }
@@ -143,5 +145,101 @@ export async function validateCertificationSet(config, preparedResults) {
     errors,
     notes,
     verdict: errors.length === 0 ? 'SET LISTO PARA EMISIÓN' : `SET NO LISTO (${errors.length} error(es))`
+  };
+}
+
+/**
+ * Prepara (y firma si hay certificado) el RCOF/ConsumoFolios correspondiente al set de
+ * certificación de 5 casos, SIN reservar folios reales ni enviar nada al SII.
+ *
+ * Como ningún caso ha sido emitido de verdad todavía (folios consumidos = 0), este RCOF es
+ * una VISTA PREVIA: usa el rango de folios que el CAF asignaría si los 5 casos se emitieran
+ * secuencialmente a partir de caf.from. Queda marcado preview=true para que no se confunda
+ * con un RCOF construido a partir de folios realmente reservados.
+ *
+ * Estados devueltos: pendiente | preparado | validado.
+ */
+export function prepareCertificationRcof(config, preparedResults) {
+  const errors = [];
+  if (preparedResults.some((r) => r.error)) errors.push('Hay casos del set con error; no se puede preparar el RCOF.');
+
+  let caf = null;
+  try {
+    caf = configuredCaf(config, 39);
+  } catch (error) {
+    errors.push(`CAF 39 inválido: ${error.message}`);
+  }
+  if (!caf) errors.push('CAF 39 no configurado.');
+  if (!config.sii?.senderRut) errors.push('SII_RUT_ENVIA no configurado.');
+  if (!config.sii?.resolutionDate || config.sii?.resolutionNumber === '') errors.push('SII_FCH_RESOL/SII_NRO_RESOL no configurados.');
+  if (!config.issuer?.rut) errors.push('SII_RUT_EMISOR no configurado.');
+
+  if (errors.length) {
+    return { status: 'pendiente', errors, xml: null, signed: false, preview: true, folios: null };
+  }
+
+  const totals = preparedResults.reduce((acc, r) => ({
+    net: acc.net + (r.totals?.net || 0),
+    exempt: acc.exempt + (r.totals?.exempt || 0),
+    vat: acc.vat + (r.totals?.vat || 0),
+    total: acc.total + (r.totals?.total || 0)
+  }), { net: 0, exempt: 0, vat: 0, total: 0 });
+
+  const previewFolios = preparedResults.map((_, index) => caf.from + index);
+  const today = new Date().toISOString().slice(0, 10);
+  const rutDigits = String(config.issuer.rut).replace(/[^0-9Kk]/g, '');
+
+  let xml;
+  try {
+    xml = buildUnsignedConsumoFolios({
+      documentoId: `RCOF_CERT_${rutDigits}_${today.replace(/-/g, '')}`,
+      issuerRut: config.issuer.rut,
+      senderRut: config.sii.senderRut,
+      resolutionDate: config.sii.resolutionDate,
+      resolutionNumber: config.sii.resolutionNumber,
+      periodStart: today,
+      periodEnd: today,
+      secEnvio: 1,
+      resumenes: [{
+        documentType: 39,
+        mntNeto: totals.net,
+        mntIva: totals.vat,
+        mntExento: totals.exempt,
+        mntTotal: totals.total,
+        foliosEmitidos: preparedResults.length,
+        foliosAnulados: 0,
+        foliosUtilizados: preparedResults.length,
+        rangoUtilizados: foliosToRanges(previewFolios)
+      }]
+    });
+  } catch (error) {
+    return { status: 'pendiente', errors: [error.message], xml: null, signed: false, preview: true, folios: null };
+  }
+
+  let signed = false;
+  if (config.credentials?.certificatePfxBase64) {
+    try {
+      const credentials = extractPfxCredentials({
+        pfxBase64: config.credentials.certificatePfxBase64,
+        password: config.credentials.certificatePassword,
+        requireCurrent: true
+      });
+      const documentoId = xml.match(/DocumentoConsumoFolios ID="([^"]+)"/)[1];
+      const result = signConsumoFolios({ xml, credentials, documentoId });
+      xml = result.xml;
+      signed = true;
+    } catch (error) {
+      errors.push(`No se pudo firmar el RCOF: ${error.message}`);
+    }
+  }
+
+  return {
+    status: signed ? 'validado' : 'preparado',
+    errors,
+    xml,
+    signed,
+    preview: true,
+    folios: { from: previewFolios[0], to: previewFolios.at(-1) },
+    totals
   };
 }

@@ -111,8 +111,9 @@ export function readiness(config) {
       siiLiveFlow: Boolean(config.sii?.networkEnabled && submissionReady)
     },
     rcof: {
-      required: false,
-      note: 'Obligación eliminada desde 2022-08-01 por Resolución Ex. SII N°53/2022: el Registro de Ventas se alimenta automáticamente de las boletas recibidas por el SII, sin envío separado de RCOF/Resumen de Ventas Diarias. Verificar con Mesa de Ayuda SII si el correo de certificación lo sigue exigiendo.'
+      requiredForCertification: true,
+      operationalObligationEliminated: true,
+      note: 'La Resolución Ex. SII N°53/2022 eliminó el envío PERIÓDICO (diario) del RCOF/Resumen de Ventas Diarias una vez habilitado como emisor — el Registro de Ventas se alimenta automáticamente de las boletas recibidas por el SII. Eso NO aplica al proceso de certificación: el instructivo vigente de certificación de Boleta Electrónica sigue exigiendo un RCOF (formato oficial ConsumoFolios, ConsumoFolio_v10.xsd) como parte del set de pruebas. Ver pestaña Certificación / RCOF.'
     },
     documentTypesAvailable: {
       boleta_afecta: Boolean(config.credentials.caf39Base64),
@@ -128,7 +129,8 @@ export function readiness(config) {
       'worker automático de conciliación/reintentos controlados',
       'almacenamiento transaccional multi-instancia para producción',
       ...(config.sii?.certificationSubmissionEnabled ? [] : ['SII_CERTIFICATION_SUBMISSION_ENABLED=false: reserva de folios y envío de DTE bloqueados']),
-      'certificación del contribuyente ante el SII'
+      'certificación del contribuyente ante el SII',
+      'RCOF de certificación (ConsumoFolios) pendiente de envío al SII'
     ]
   };
 }

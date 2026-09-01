@@ -218,6 +218,18 @@
     </div>
     <div class="result-box" id="setResultBox" style="display:none"></div>
   </div>
+
+  <div class="panel">
+    <h2>RCOF de certificación (ConsumoFolios)</h2>
+    <p class="hint">Formato oficial SII "ConsumoFolios" (ConsumoFolio_v10.xsd), exigido por el instructivo de certificación de Boleta Electrónica como envío separado del Set de Boletas. Preparar/validar NO reserva folios ni envía nada al SII.</p>
+    <div class="toolbar">
+      <span>Estado:</span><span class="status-pill borrador" id="rcofStatusPill">—</span>
+    </div>
+    <div class="toolbar">
+      <button id="loadRcofBtn">Preparar / validar RCOF</button>
+    </div>
+    <div class="result-box" id="rcofResultBox" style="display:none"></div>
+  </div>
 </section>
 
 <!-- ============ CONFIGURACIÓN ============ -->
@@ -633,6 +645,28 @@ $('validateSetBtn').addEventListener('click', async () => {
     renderSetTable(result.cases);
     box.textContent = result.verdict + '\n\n' + (result.errors.length ? 'Errores:\n- ' + result.errors.join('\n- ') : 'Sin errores.') + '\n\nNotas:\n- ' + result.notes.join('\n- ');
   } catch (e) {
+    box.textContent = 'Error: ' + e.message;
+  }
+});
+
+const RCOF_STATUS_CLASS = { pendiente: 'borrador', preparado: 'preparado', validado: 'aceptado', enviado: 'procesando', rechazado: 'rechazado' };
+
+$('loadRcofBtn').addEventListener('click', async () => {
+  const pill = $('rcofStatusPill');
+  const box = $('rcofResultBox');
+  pill.textContent = 'Preparando…';
+  pill.className = 'status-pill borrador';
+  box.style.display = 'block';
+  box.textContent = 'Preparando y validando RCOF (sin enviar, sin consumir folios)…';
+  try {
+    const rcof = await api('/v1/certification/rcof');
+    pill.textContent = rcof.status.toUpperCase();
+    pill.className = 'status-pill ' + (RCOF_STATUS_CLASS[rcof.status] || 'borrador');
+    box.textContent = JSON.stringify({ ...rcof, xml: rcof.xml ? '(ver abajo)' : null }, null, 2)
+      + (rcof.xml ? '\n\n--- XML ConsumoFolios ---\n' + rcof.xml : '');
+  } catch (e) {
+    pill.textContent = 'ERROR';
+    pill.className = 'status-pill rechazado';
     box.textContent = 'Error: ' + e.message;
   }
 });

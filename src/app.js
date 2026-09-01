@@ -7,7 +7,7 @@ import { SandboxService } from './services/sandbox-service.js';
 import { StatusService } from './services/status-service.js';
 import { createBrandingStore } from './services/branding-store.js';
 import { extractPfxCredentials } from './crypto/pfx.js';
-import { prepareCertificationSet, validateCertificationSet } from './sii/certification-set.js';
+import { prepareCertificationSet, validateCertificationSet, prepareCertificationRcof } from './sii/certification-set.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, '..', 'public');
@@ -201,6 +201,13 @@ export function createApp(config) {
         const cases = await prepareCertificationSet(issueService);
         const result = await validateCertificationSet(config, cases);
         return json(res, 200, { ...result, cases });
+      }
+
+      if (req.method === 'GET' && url.pathname === '/v1/certification/rcof') {
+        if (!authorized(req, config)) return json(res, 401, { error: 'No autorizado.' });
+        const cases = await prepareCertificationSet(issueService);
+        const rcof = prepareCertificationRcof(config, cases);
+        return json(res, 200, rcof);
       }
 
       return json(res, 404, { error: 'Ruta no encontrada.' });
