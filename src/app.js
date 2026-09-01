@@ -1,5 +1,7 @@
 import { readiness } from './config.js';
 import { IssueService } from './services/issue-service.js';
+import { SandboxService } from './services/sandbox-service.js';
+import { StatusService } from './services/status-service.js';
 
 function json(res, status, body) {
   const payload = JSON.stringify(body);
@@ -40,6 +42,8 @@ function authorized(req, config) {
 
 export function createApp(config) {
   const issueService = new IssueService(config);
+  const statusService = new StatusService(config, { submissionStore: issueService.submissionStore });
+  const sandboxService = new SandboxService(config);
 
   return async function app(req, res) {
     try {
@@ -54,10 +58,21 @@ export function createApp(config) {
         return json(res, 200, readiness(config));
       }
 
+      if (req.method === 'POST' && url.pathname === '/v1/sandbox/probe') {
+        if (!authorized(req, config)) return json(res, 401, { error: 'No autorizado.' });
+        return json(res, 200, await sandboxService.probe());
+      }
+
       if (req.method === 'POST' && url.pathname === '/v1/documents/issue') {
         if (!authorized(req, config)) return json(res, 401, { error: 'No autorizado.' });
         const body = await readJson(req);
         return json(res, 202, await issueService.issue(body));
+      }
+
+      if (req.method === 'POST' && url.pathname === '/v1/documents/status') {
+        if (!authorized(req, config)) return json(res, 401, { error: 'No autorizado.' });
+        const body = await readJson(req);
+        return json(res, 200, await statusService.refresh(body));
       }
 
       return json(res, 404, { error: 'Ruta no encontrada.' });
