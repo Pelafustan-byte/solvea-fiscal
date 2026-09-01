@@ -2,6 +2,7 @@ import { extractPfxCredentials } from '../crypto/pfx.js';
 import { validateIssueRequest, paymentCode } from '../domain/tax-document.js';
 import { SiiAuthClient } from '../sii/auth-client.js';
 import { SiiBoletaClient } from '../sii/boleta-client.js';
+import { SiiBoletaLookupClient } from '../sii/boleta-lookup-client.js';
 import { configuredCaf } from './issue-service.js';
 import { buildUnsignedEnvioBoletaSet, signEnvioBoleta } from '../sii/envio-boleta.js';
 import { buildTed } from '../sii/ted.js';
@@ -17,6 +18,24 @@ function httpError(status, message) {
   return error;
 }
 
+/**
+ * Whitelist estricta de lo que se persiste de un error upstream del SII en un run UNCERTAIN.
+ * Nunca incluye nada de nuestra propia petición (token/cookie/PFX/CAF/RSASK/Base64/password):
+ * sólo campos de la RESPUESTA del SII (status/content-type/body) más metadatos propios
+ * (endpoint, timestamp). Si el error no trae `detail` (p.ej. error de red antes de respuesta),
+ * devuelve null.
+ */
+function sanitizeUpstreamDiagnostics(detail) {
+  if (!detail || typeof detail !== 'object') return null;
+  return {
+    httpStatus: typeof detail.httpStatus === 'number' ? detail.httpStatus : (typeof detail.status === 'number' ? detail.status : null),
+    contentType: typeof detail.contentType === 'string' ? detail.contentType : '',
+    bodyPreview: typeof detail.bodyPreview === 'string' ? detail.bodyPreview.slice(0, 1000) : '',
+    endpoint: typeof detail.endpoint === 'string' ? detail.endpoint : '',
+    timestamp: typeof detail.timestamp === 'string' ? detail.timestamp : new Date().toISOString()
+  };
+}
+
 const RUN_ID_PREFIX = 'cert_';
 
 export function certificationRunId(caf) {
@@ -28,12 +47,13 @@ const TERMINAL_STATES = new Set(['SUBMITTING', 'SUBMITTED', 'PROCESSING', 'ACCEP
 export class CertificationSubmissionService {
   #certificateCredentials;
 
-  constructor(config, { folioStore, runStore, authClient, boletaClient } = {}) {
+  constructor(config, { folioStore, runStore, authClient, boletaClient, lookupClient } = {}) {
     this.config = config;
     this.folioStore = folioStore || createFolioStore(config);
     this.runStore = runStore || createCertificationRunStore(config);
     this.authClient = authClient || null;
     this.boletaClient = boletaClient || null;
+    this.lookupClient = lookupClient || null;
   }
 
   #getAuthClient() {
@@ -48,6 +68,16 @@ export class CertificationSubmissionService {
       this.boletaClient = new SiiBoletaClient({ baseUrl: this.config.sii?.boletaBaseUrl, timeoutMs: this.config.sii?.timeoutMs });
     }
     return this.boletaClient;
+  }
+
+  #getLookupClient() {
+    if (!this.lookupClient) {
+      // El servicio "Consulta de Boleta Electrónica" vive en el servidor de recursos general
+      // (apicert.sii.cl en certificación) — pangal.sii.cl está documentado como exclusivo para
+      // el envío, no para esta consulta. Ver src/sii/boleta-lookup-client.js.
+      this.lookupClient = new SiiBoletaLookupClient({ baseUrl: this.config.sii?.authBaseUrl, timeoutMs: this.config.sii?.timeoutMs });
+    }
+    return this.lookupClient;
   }
 
   #getCertificateCredentials() {
@@ -192,7 +222,12 @@ export class CertificationSubmissionService {
       await this.runStore.put(runId, finalRun);
       return finalRun;
     } catch (error) {
-      const uncertainRun = { ...submitting, status: 'UNCERTAIN', error: error.message };
+      const uncertainRun = {
+        ...submitting,
+        status: 'UNCERTAIN',
+        error: error.message,
+        upstreamDiagnostics: sanitizeUpstreamDiagnostics(error.detail)
+      };
       await this.runStore.put(runId, uncertainRun);
       throw httpError(502, `Envío del set quedó en estado incierto (no se reintenta automáticamente): ${error.message}`);
     }
@@ -237,5 +272,36 @@ export class CertificationSubmissionService {
     };
     await this.runStore.put(runId, updated);
     return updated;
+  }
+
+  /**
+   * Consulta al SII (servicio oficial "Consulta de Boleta Electrónica" por folio) el estado
+   * real de un conjunto de folios del CAF 39 activo, SIN reservar folios ni modificar
+   * folio-state. Si existe una corrida persistida usa su mapping real; si no, usa el mapping
+   * preview (folios que se usarían si se emitiera ahora). No requiere el safety lock: es una
+   * operación de sólo lectura hacia el SII.
+   */
+  async checkFolios({ folios } = {}) {
+    const caf = configuredCaf(this.config, 39);
+    if (!caf) throw httpError(503, 'CAF 39 no configurado.');
+    if (!this.config.sii?.networkEnabled) throw httpError(503, 'SII_NETWORK_ENABLED=false: no se puede consultar folios en el SII.');
+
+    const credentials = this.#getCertificateCredentials();
+    if (!credentials) throw httpError(503, 'Certificado no configurado.');
+
+    const runId = certificationRunId(caf);
+    const run = await this.runStore.get(runId);
+    const targetFolios = Array.isArray(folios) && folios.length
+      ? folios
+      : (run?.mapping ? run.mapping.map((m) => m.folio) : CERTIFICATION_CASES.map((_, i) => caf.from + i));
+
+    const authentication = await this.#getAuthClient().authenticate(credentials);
+    const results = await this.#getLookupClient().checkDocuments({
+      token: authentication.token,
+      issuerRut: this.config.issuer.rut,
+      documentType: 39,
+      folios: targetFolios
+    });
+    return { source: run?.mapping ? 'run' : 'preview', results };
   }
 }
