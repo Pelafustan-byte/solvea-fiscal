@@ -4,6 +4,14 @@ import { boletaBaseUrlForMode } from './sii/boleta-client.js';
 const text = (value) => String(value ?? '').trim();
 const bool = (value, fallback = false) => value == null || value === '' ? fallback : ['1', 'true', 'yes', 'on'].includes(String(value).toLowerCase());
 
+function hostname(value) {
+  try {
+    return new URL(value).hostname;
+  } catch {
+    return '';
+  }
+}
+
 export function loadConfig(env = process.env) {
   const mode = text(env.SOLVEA_FISCAL_MODE || 'development').toLowerCase();
   if (!['development', 'certification', 'production'].includes(mode)) {
@@ -53,6 +61,7 @@ export function readiness(config) {
   if (!config.credentials.certificatePfxBase64) credentialMissing.push('certificate');
   if (!config.credentials.caf39Base64) credentialMissing.push('caf39');
   if (config.mode === 'certification' && !config.stateDir) credentialMissing.push('stateDir');
+
   const submissionMissing = [];
   if (!config.sii?.senderRut) submissionMissing.push('sii.senderRut');
   if (!config.sii?.resolutionDate) submissionMissing.push('sii.resolutionDate');
@@ -60,11 +69,20 @@ export function readiness(config) {
 
   const configurationReady = issuerMissing.length === 0 && credentialMissing.length === 0;
   const submissionReady = configurationReady && submissionMissing.length === 0;
+  const sandboxEndpointsSafe = hostname(config.sii?.authBaseUrl) === 'apicert.sii.cl'
+    && hostname(config.sii?.boletaBaseUrl) === 'pangal.sii.cl';
+  const sandboxReady = config.mode === 'certification'
+    && Boolean(config.sii?.networkEnabled)
+    && submissionReady
+    && sandboxEndpointsSafe;
+
   return {
     mode: config.mode,
     productionReady: false,
     configurationReady,
     submissionReady,
+    sandboxReady,
+    sandboxEndpointsSafe,
     statePersistence: config.stateDir ? 'file' : 'memory',
     siiNetworkEnabled: Boolean(config.sii?.networkEnabled),
     siiAuthBaseUrl: config.sii?.authBaseUrl || '',
@@ -84,13 +102,16 @@ export function readiness(config) {
       envioBoletaSignature: true,
       siiSubmissionClient: true,
       siiStatusTrackingClient: true,
+      siiStatusRefresh: true,
+      sandboxProbe: true,
       siiLiveFlow: Boolean(config.sii?.networkEnabled && submissionReady)
     },
     missing: [...issuerMissing, ...credentialMissing, ...submissionMissing],
     blockers: [
       'verificación de la firma del SII sobre el CAF con llave pública oficial',
       ...(config.sii?.networkEnabled ? [] : ['habilitar red SII explícitamente para pruebas de certificación']),
-      'persistencia durable de Track ID y worker de reintentos',
+      ...(config.mode === 'certification' && !sandboxEndpointsSafe ? ['usar endpoints oficiales apicert/pangal para sandbox'] : []),
+      'worker automático de conciliación/reintentos controlados',
       'almacenamiento transaccional multi-instancia para producción',
       'Resumen de Ventas Diarias / consumo de folios',
       'certificación del contribuyente ante el SII'
