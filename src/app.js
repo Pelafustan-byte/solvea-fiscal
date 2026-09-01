@@ -9,6 +9,10 @@ import { createBrandingStore } from './services/branding-store.js';
 import { extractPfxCredentials } from './crypto/pfx.js';
 import { prepareCertificationSet, validateCertificationSet, prepareCertificationRcof, previewFolioMapping } from './sii/certification-set.js';
 import { CertificationSubmissionService, certificationRunId } from './services/certification-submission-service.js';
+import { collectStorageDiagnostics, writeStorageProbe } from './lib/storage-diagnostics.js';
+import { SiiAuthClient } from './sii/auth-client.js';
+import { SiiBoletaLookupClient } from './sii/boleta-lookup-client.js';
+import { diagnosePangalAuth } from './sii/pangal-auth-probe.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, '..', 'public');
@@ -273,6 +277,64 @@ export function createApp(config) {
         const body = await readJson(req).catch(() => ({}));
         const result = await certificationSubmissionService.checkFolios({ folios: body.folios, receptorRut: body.receptorRut, fechaEmision: body.fechaEmision });
         return json(res, 200, result);
+      }
+
+      if (req.method === 'POST' && url.pathname === '/v1/certification/arm') {
+        if (!authorized(req, config)) return json(res, 401, { error: 'No autorizado.' });
+        const arm = await certificationSubmissionService.arm();
+        return json(res, 200, { arm });
+      }
+
+      if (req.method === 'GET' && url.pathname === '/v1/certification/arm') {
+        if (!authorized(req, config)) return json(res, 401, { error: 'No autorizado.' });
+        const arm = await certificationSubmissionService.getArmStatus();
+        return json(res, 200, { arm });
+      }
+
+      if (req.method === 'GET' && url.pathname === '/v1/certification/diagnostics/storage') {
+        if (!authorized(req, config)) return json(res, 401, { error: 'No autorizado.' });
+        return json(res, 200, await collectStorageDiagnostics(config.stateDir));
+      }
+
+      if (req.method === 'POST' && url.pathname === '/v1/certification/diagnostics/storage-probe') {
+        if (!authorized(req, config)) return json(res, 401, { error: 'No autorizado.' });
+        if (!config.stateDir) throw Object.assign(new Error('SOLVEA_FISCAL_STATE_DIR no configurado.'), { status: 503 });
+        return json(res, 200, await writeStorageProbe(config.stateDir));
+      }
+
+      if (req.method === 'POST' && url.pathname === '/v1/certification/diagnostics/pangal-auth') {
+        if (!authorized(req, config)) return json(res, 401, { error: 'No autorizado.' });
+        if (!config.credentials?.certificatePfxBase64) throw Object.assign(new Error('Certificado no configurado.'), { status: 503 });
+        const credentials = extractPfxCredentials({
+          pfxBase64: config.credentials.certificatePfxBase64,
+          password: config.credentials.certificatePassword,
+          requireCurrent: true
+        });
+        const authClient = new SiiAuthClient({ baseUrl: config.sii?.authBaseUrl, timeoutMs: config.sii?.timeoutMs });
+        const authentication = await authClient.authenticate(credentials);
+
+        const caf = configuredCaf(config, 39);
+        let apicertCheck = null;
+        if (caf) {
+          const lookupClient = new SiiBoletaLookupClient({ baseUrl: config.sii?.authBaseUrl, timeoutMs: config.sii?.timeoutMs });
+          apicertCheck = await lookupClient.checkDocument({
+            token: authentication.token, issuerRut: config.issuer.rut, documentType: 39, folio: caf.from,
+            receptorRut: '66666666-6', monto: 1, fechaEmision: '01-01-2026'
+          });
+        }
+
+        const pangalDiagnostic = await diagnosePangalAuth({
+          pangalBaseUrl: config.sii?.boletaBaseUrl,
+          token: authentication.token,
+          senderRut: config.sii?.senderRut,
+          companyRut: config.issuer.rut
+        });
+
+        return json(res, 200, {
+          openApiHosts: { auth: config.sii?.authBaseUrl || '', upload: config.sii?.boletaBaseUrl || '' },
+          apicertTokenCheck: apicertCheck ? { httpStatus: apicertCheck.httpStatus, result: apicertCheck.result, codigo: apicertCheck.codigo, reason: apicertCheck.reason || null } : null,
+          ...pangalDiagnostic
+        });
       }
 
       return json(res, 404, { error: 'Ruta no encontrada.' });
