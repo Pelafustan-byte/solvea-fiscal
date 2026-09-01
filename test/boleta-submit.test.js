@@ -7,7 +7,7 @@ import path from 'node:path';
 import forgeModule from 'node-forge';
 import { extractPfxCredentials } from '../src/crypto/pfx.js';
 import { SiiBoletaClient, boletaBaseUrlForMode } from '../src/sii/boleta-client.js';
-import { buildUnsignedEnvioBoleta, signEnvioBoleta, verifyEnvioBoletaSignature } from '../src/sii/envio-boleta.js';
+import { buildUnsignedEnvioBoleta, buildUnsignedEnvioBoletaSet, signEnvioBoleta, verifyEnvioBoletaSignature } from '../src/sii/envio-boleta.js';
 import { FileSubmissionStore } from '../src/services/submission-store.js';
 
 const forge = forgeModule?.default || forgeModule;
@@ -34,8 +34,8 @@ function credentials(password = 'solvea-submit-test') {
   return extractPfxCredentials({ pfxBase64: pfx, password });
 }
 
-function dteFixture() {
-  return `<?xml version="1.0" encoding="ISO-8859-1"?><DTE version="1.0"><Documento ID="F100T39"><Encabezado><IdDoc><TipoDTE>39</TipoDTE><Folio>100</Folio></IdDoc></Encabezado></Documento><Signature xmlns="http://www.w3.org/2000/09/xmldsig#"><SignedInfo/></Signature></DTE>`;
+function dteFixture(folio = 100) {
+  return `<?xml version="1.0" encoding="ISO-8859-1"?><DTE version="1.0"><Documento ID="F${folio}T39"><Encabezado><IdDoc><TipoDTE>39</TipoDTE><Folio>${folio}</Folio></IdDoc></Encabezado></Documento><Signature xmlns="http://www.w3.org/2000/09/xmldsig#"><SignedInfo/></Signature></DTE>`;
 }
 
 test('construye EnvioBOLETA v11 y firma SetDTE', () => {
@@ -58,6 +58,23 @@ test('construye EnvioBOLETA v11 y firma SetDTE', () => {
   assert.equal(verifyEnvioBoletaSignature(signed.xml, cert.certificatePem, setId).valid, true);
   const tampered = signed.xml.replace('<NroDTE>1</NroDTE>', '<NroDTE>2</NroDTE>');
   assert.equal(verifyEnvioBoletaSignature(tampered, cert.certificatePem, setId).valid, false);
+});
+
+test('empaqueta un Set de Boletas con varios DTE en un solo sobre (sin enviarlo)', () => {
+  const cert = credentials();
+  const setId = 'SetCertificacion_5casos';
+  const dtes = [1, 2, 3, 4, 5].map((folio) => dteFixture(folio));
+  const unsigned = buildUnsignedEnvioBoletaSet({
+    dteXmlList: dtes,
+    issuerRut: '76.000.000-0', senderRut: '12.345.678-5',
+    resolutionDate: '2026-08-31', resolutionNumber: 0,
+    setId, timestamp: '2026-08-31T23:40:00.000Z', timeZone: 'America/Santiago'
+  });
+  assert.match(unsigned, /<TpoDTE>39<\/TpoDTE><NroDTE>5<\/NroDTE>/);
+  assert.equal((unsigned.match(/<Documento ID="F\d+T39">/g) || []).length, 5);
+  const signed = signEnvioBoleta({ xml: unsigned, credentials: cert, setId });
+  assert.equal(signed.verified, true);
+  assert.equal(verifyEnvioBoletaSignature(signed.xml, cert.certificatePem, setId).valid, true);
 });
 
 test('cliente boleta envía multipart con token y extrae Track ID', async () => {

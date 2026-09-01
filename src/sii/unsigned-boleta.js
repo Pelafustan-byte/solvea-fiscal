@@ -36,7 +36,7 @@ export function buildUnsignedBoletaDraft({
     : `SOLVEA-DRAFT-${document.sale.id}`;
 
   const receptorTail = isFactura
-    ? `${tag('GiroRecep', document.recipient.activity)}${tag('DirRecep', document.recipient.address)}${tag('CmnaRecep', document.recipient.commune)}${tag('CiudadRecep', document.recipient.city)}`
+    ? `${tag('GiroRecep', document.recipient.activity)}${tag('DirRecep', document.recipient.address)}${tag('CmnaRecep', document.recipient.commune)}${tag('CiudadRecep', document.recipient.city)}${document.recipient.email ? tag('CorreoRecep', document.recipient.email) : ''}`
     : '';
   const idDocTail = isFactura ? '' : tag('IndServicio', 3);
 

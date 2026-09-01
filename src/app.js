@@ -2,10 +2,12 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readiness } from './config.js';
-import { IssueService } from './services/issue-service.js';
+import { IssueService, configuredCaf } from './services/issue-service.js';
 import { SandboxService } from './services/sandbox-service.js';
 import { StatusService } from './services/status-service.js';
 import { createBrandingStore } from './services/branding-store.js';
+import { extractPfxCredentials } from './crypto/pfx.js';
+import { prepareCertificationSet, validateCertificationSet } from './sii/certification-set.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, '..', 'public');
@@ -63,6 +65,31 @@ export function createApp(config) {
   const statusService = new StatusService(config, { submissionStore: issueService.submissionStore });
   const sandboxService = new SandboxService(config);
   const brandingStore = createBrandingStore(config);
+  let lastProbe = null;
+
+  function certificateStatus() {
+    if (!config.credentials?.certificatePfxBase64) return { ok: false, error: 'SII_CERT_PFX_BASE64 no configurado.' };
+    try {
+      const credentials = extractPfxCredentials({
+        pfxBase64: config.credentials.certificatePfxBase64,
+        password: config.credentials.certificatePassword,
+        requireCurrent: true
+      });
+      return { ok: true, validFrom: credentials.validFrom, validTo: credentials.validTo, fingerprint256: credentials.fingerprint256 };
+    } catch (error) {
+      return { ok: false, error: error.message };
+    }
+  }
+
+  function cafStatus(documentCode) {
+    try {
+      const caf = configuredCaf(config, documentCode);
+      if (!caf) return { ok: false, error: `CAF ${documentCode} no configurado.` };
+      return { ok: true, from: caf.from, to: caf.to, authorizedAt: caf.authorizedAt, rut: caf.rut };
+    } catch (error) {
+      return { ok: false, error: error.message };
+    }
+  }
 
   return async function app(req, res) {
     try {
@@ -84,31 +111,37 @@ export function createApp(config) {
           mode: config.mode,
           issuer: config.issuer,
           documentTypesAvailable: ready.documentTypesAvailable,
-          siiNetworkEnabled: ready.siiNetworkEnabled
+          siiNetworkEnabled: ready.siiNetworkEnabled,
+          certificationSubmissionEnabled: ready.certificationSubmissionEnabled,
+          rcof: ready.rcof
         });
       }
 
-      if (req.method === 'GET' && url.pathname === '/v1/branding/logo') {
-        const logo = await brandingStore.getLogo();
-        return json(res, 200, { logo: logo || '' });
+      if (req.method === 'GET' && url.pathname === '/v1/branding') {
+        return json(res, 200, await brandingStore.get());
       }
 
-      if (req.method === 'PUT' && url.pathname === '/v1/branding/logo') {
+      if (req.method === 'PUT' && url.pathname === '/v1/branding') {
         if (!authorized(req, config)) return json(res, 401, { error: 'No autorizado.' });
         const body = await readJson(req);
-        const dataUri = String(body.logo || '');
-        if (!/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(dataUri)) {
-          const error = new Error('logo debe ser un data URI PNG/JPEG/WEBP en base64.');
-          error.status = 422;
-          throw error;
+        if (body.logo !== undefined) {
+          const dataUri = String(body.logo || '');
+          if (dataUri && !/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(dataUri)) {
+            const error = new Error('logo debe ser un data URI PNG/JPEG/WEBP en base64.');
+            error.status = 422;
+            throw error;
+          }
+          if (dataUri.length > MAX_LOGO_BYTES * 1.4) {
+            const error = new Error('Logo demasiado grande (máx. ~400KB).');
+            error.status = 413;
+            throw error;
+          }
         }
-        if (dataUri.length > MAX_LOGO_BYTES * 1.4) {
-          const error = new Error('Logo demasiado grande (máx. ~400KB).');
-          error.status = 413;
-          throw error;
-        }
-        await brandingStore.setLogo(dataUri);
-        return json(res, 200, { ok: true });
+        const updated = await brandingStore.update({
+          logo: body.logo, businessName: body.businessName, footerMessage: body.footerMessage,
+          showRegister: body.showRegister, showSeller: body.showSeller, showQr: body.showQr
+        });
+        return json(res, 200, updated);
       }
 
       if (req.method === 'GET' && url.pathname === '/v1/readiness') {
@@ -118,7 +151,15 @@ export function createApp(config) {
 
       if (req.method === 'POST' && url.pathname === '/v1/sandbox/probe') {
         if (!authorized(req, config)) return json(res, 401, { error: 'No autorizado.' });
-        return json(res, 200, await sandboxService.probe());
+        const result = await sandboxService.probe();
+        lastProbe = { at: new Date().toISOString(), ok: Boolean(result?.authentication?.tokenObtained) };
+        return json(res, 200, result);
+      }
+
+      if (req.method === 'POST' && url.pathname === '/v1/documents/prepare') {
+        if (!authorized(req, config)) return json(res, 401, { error: 'No autorizado.' });
+        const body = await readJson(req);
+        return json(res, 200, await issueService.prepare(body));
       }
 
       if (req.method === 'POST' && url.pathname === '/v1/documents/issue') {
@@ -131,6 +172,35 @@ export function createApp(config) {
         if (!authorized(req, config)) return json(res, 401, { error: 'No autorizado.' });
         const body = await readJson(req);
         return json(res, 200, await statusService.refresh(body));
+      }
+
+      if (req.method === 'GET' && url.pathname === '/v1/certification/status') {
+        if (!authorized(req, config)) return json(res, 401, { error: 'No autorizado.' });
+        const ready = readiness(config);
+        const folios = await issueService.folioUsage(39);
+        return json(res, 200, {
+          mode: config.mode,
+          certificate: certificateStatus(),
+          caf39: cafStatus(39),
+          readiness: { configurationReady: ready.configurationReady, submissionReady: ready.submissionReady, sandboxReady: ready.sandboxReady },
+          siiNetworkEnabled: ready.siiNetworkEnabled,
+          certificationSubmissionEnabled: ready.certificationSubmissionEnabled,
+          lastProbe,
+          folios: folios || { used: 0, available: 0, from: 0, to: 0 },
+          rcof: ready.rcof
+        });
+      }
+
+      if (req.method === 'GET' && url.pathname === '/v1/certification/set') {
+        if (!authorized(req, config)) return json(res, 401, { error: 'No autorizado.' });
+        return json(res, 200, { cases: await prepareCertificationSet(issueService) });
+      }
+
+      if (req.method === 'POST' && url.pathname === '/v1/certification/set/validate') {
+        if (!authorized(req, config)) return json(res, 401, { error: 'No autorizado.' });
+        const cases = await prepareCertificationSet(issueService);
+        const result = await validateCertificationSet(config, cases);
+        return json(res, 200, { ...result, cases });
       }
 
       return json(res, 404, { error: 'Ruta no encontrada.' });

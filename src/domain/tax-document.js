@@ -79,6 +79,8 @@ export function validateIssueRequest(input) {
   const recipient = input.recipient || {};
   const recipientRut = normalizeRut(recipient.rut);
   if (recipientRut && !isValidRut(recipientRut)) fail('RUT receptor inválido.');
+  const recipientEmail = String(recipient.email || '').trim().slice(0, 80);
+  if (recipientEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(recipientEmail)) fail('recipient.email inválido.');
 
   if (isFactura) {
     if (!recipientRut || !isValidRut(recipientRut)) fail('La factura requiere recipient.rut válido.');
@@ -118,7 +120,8 @@ export function validateIssueRequest(input) {
       activity: String(recipient.activity || '').trim().slice(0, 40),
       address: String(recipient.address || '').trim().slice(0, 70),
       commune: String(recipient.commune || '').trim().slice(0, 20),
-      city: String(recipient.city || '').trim().slice(0, 20)
+      city: String(recipient.city || '').trim().slice(0, 20),
+      email: recipientEmail
     },
     items: normalizedItems,
     reference
