@@ -2,96 +2,178 @@
 
 Motor tributario desacoplado para POS y sistemas de comandas SOLVEA. El primer consumidor es **Botillería San Pablo**.
 
-## Estado de la fase 4
+## Estado actual
 
-El servicio ya cubre el núcleo criptográfico del DTE y el flujo de autenticación automática del SII:
+SOLVEA Fiscal ya implementa el circuito técnico necesario para probar Boleta Electrónica en el ambiente de certificación del SII:
 
 - boleta afecta TipoDTE 39 y boleta exenta TipoDTE 41;
 - parser del archivo `AUTORIZACION` del CAF;
-- reserva unívoca e idempotente de folios;
-- construcción y firma del `DD/TED` con `SHA1withRSA`;
+- reserva unívoca, persistente e idempotente de folios;
+- construcción y firma del `DD/TED` con la llave del CAF;
 - carga y validación de certificado digital PKCS#12/PFX;
 - firma y verificación XMLDSIG del `Documento`;
-- obtención REST de semilla SII;
-- construcción de `<getToken><item><Semilla>...</Semilla></item></getToken>`;
-- firma XMLDSIG de la semilla con `Reference URI=""` y transform `enveloped-signature`;
-- envío REST de la semilla firmada para obtener token;
-- validación de `ESTADO`, `SEMILLA` y `TOKEN` en respuestas XML;
-- separación automática de ambiente de certificación y producción;
-- red SII deshabilitada por defecto para impedir llamadas accidentales.
+- semilla, firma de semilla y token SII;
+- construcción y firma del sobre `EnvioBOLETA_v11`;
+- upload multipart al servicio de Boleta Electrónica;
+- persistencia del Track ID;
+- protección `submitting/submitted/uncertain` contra reenvíos ciegos;
+- consulta posterior del Track ID y clasificación conservadora como aceptado, rechazado o en proceso;
+- probe seguro de certificación que comprueba PFX + semilla + token sin consumir folios ni enviar documentos.
 
-**Todavía no se marca una boleta como aceptada por el SII.** El DTE continúa en `processing` hasta implementar el sobre de envío, POST de boleta, Track ID y consulta de estado.
+**Producción continúa bloqueada intencionalmente.** El objetivo actual es probar y certificar el contribuyente en el ambiente SII antes de habilitar emisión productiva.
+
+## Circuito recomendado de sandbox
+
+### 1. Configurar certificación
+
+```text
+SOLVEA_FISCAL_MODE=certification
+SOLVEA_FISCAL_STATE_DIR=/data/solvea-fiscal
+SOLVEA_FISCAL_API_TOKEN=<token interno fuerte>
+SII_TIME_ZONE=America/Santiago
+SII_NETWORK_ENABLED=true
+
+# Dejarlos vacíos usa los defaults de certificación:
+SII_AUTH_BASE_URL=
+SII_BOLETA_BASE_URL=
+
+SII_RUT_ENVIA=<RUT autorizado que firma/envía>
+SII_RUT_RECEPTOR=60803000-K
+SII_FCH_RESOL=<fecha aplicable al ambiente/contribuyente>
+SII_NRO_RESOL=<número aplicable al ambiente/contribuyente>
+
+SII_RUT_EMISOR=<RUT contribuyente>
+SII_RAZON_SOCIAL=<razón social>
+SII_GIRO=<giro>
+SII_DIRECCION_ORIGEN=<dirección>
+SII_COMUNA_ORIGEN=CONSTITUCION
+SII_CIUDAD_ORIGEN=CONSTITUCION
+SII_CODIGO_SUCURSAL=
+
+SII_CERT_PFX_BASE64=<PFX en Base64>
+SII_CERT_PASSWORD=<contraseña PFX>
+SII_CAF_39_XML_BASE64=<AUTORIZACION CAF 39 de certificación en Base64>
+SII_CAF_41_XML_BASE64=<opcional CAF 41>
+```
+
+En `certification`, los defaults son:
+
+```text
+autenticación -> https://apicert.sii.cl/recursos/v1
+boletas       -> https://pangal.sii.cl/recursos/v1
+```
+
+### 2. Revisar readiness
+
+`GET /v1/readiness`
+
+Debe informar `sandboxReady: true` antes de enviar una boleta real de certificación.
+
+### 3. Probar sólo autenticación
+
+`POST /v1/sandbox/probe`
+
+Este endpoint está diseñado para la primera prueba real. Comprueba:
+
+```text
+PFX -> llave/certificado -> vigencia -> semilla apicert -> firma -> token
+```
+
+No devuelve el token, no reserva folio y no envía un DTE. Además se niega a funcionar si las URLs configuradas no son exactamente `apicert.sii.cl` y `pangal.sii.cl`.
+
+### 4. Emitir una boleta de certificación
+
+`POST /v1/documents/issue`
+
+Ejemplo del contrato que usa la boti:
+
+```json
+{
+  "idempotencyKey": "tax-sandbox-0001-boleta_afecta",
+  "documentType": "boleta_afecta",
+  "sale": {
+    "id": "sandbox-0001",
+    "number": "SBX-000001",
+    "subtotal": 1990,
+    "discount": 0,
+    "total": 1990,
+    "paymentMethod": "cash",
+    "completedAt": "2026-08-31T20:00:00-04:00"
+  },
+  "recipient": {},
+  "items": [
+    {
+      "sku": "SANDBOX-001",
+      "name": "Producto prueba certificacion",
+      "quantity": 1,
+      "unitPrice": 1990,
+      "subtotal": 1990
+    }
+  ]
+}
+```
+
+Si el upload es recibido, la respuesta queda `processing`, incluye el folio reservado y el Track ID, pero **no se declara todavía aceptada**.
+
+### 5. Refrescar el estado del Track ID
+
+`POST /v1/documents/status`
+
+```json
+{
+  "idempotencyKey": "tax-sandbox-0001-boleta_afecta"
+}
+```
+
+La respuesta se normaliza a uno de estos resultados:
+
+```text
+status=processing  -> el SII aún está procesando el envío
+status=issued      -> aceptación confirmada
+status=rejected    -> rechazo confirmado
+```
+
+Los datos originales del SII (`estado`, glosa y cantidades informadas/aceptadas/rechazadas/reparos cuando existan) se conservan en el objeto `sii`.
 
 ## API para Botillería San Pablo
 
 ### `POST /v1/documents/issue`
 
-Acepta el contrato que ya genera el módulo `commerce-fiscal` de la boti. Con CAF y PFX válidos configurados produce un DTE con TED y XMLDSIG verificadas localmente:
+Recibe venta, ítems, receptor e `idempotencyKey`. En sandbox ejecuta:
 
-```json
-{
-  "status": "processing",
-  "folio": "123",
-  "externalId": "sf_...",
-  "fiscalStage": "dte_signed",
-  "ted": { "verified": true },
-  "signature": { "verified": true, "documentId": "F123T39" },
-  "sii": { "submitted": false, "trackId": "", "accepted": false }
-}
+```text
+validar venta
+ -> reservar folio CAF
+ -> construir TED
+ -> firmar DTE
+ -> construir EnvioBOLETA
+ -> firmar SetDTE
+ -> obtener token SII
+ -> upload
+ -> persistir Track ID
 ```
+
+### `POST /v1/documents/status`
+
+Consulta el Track ID persistido para la misma `idempotencyKey` y actualiza el estado fiscal.
+
+### `POST /v1/sandbox/probe`
+
+Diagnóstico seguro de autenticación, exclusivo de certificación.
 
 ### `GET /v1/readiness`
 
-Informa capacidades implementadas, datos faltantes, ambiente SII y si la red está habilitada.
+Informa configuración, capacidades y si el sandbox está efectivamente listo.
 
 ### `GET /health`
 
 Healthcheck del servicio.
 
-## Autenticación SII
+## Seguridad e idempotencia
 
-El cliente interno usa los servicios REST de Boleta Electrónica. Por defecto:
+El token SII nunca sale del backend. El PFX, su contraseña y los CAF deben existir únicamente como secretos del entorno.
 
-```text
-certification -> https://apicert.sii.cl/recursos/v1
-production    -> https://api.sii.cl/recursos/v1
-```
-
-La secuencia implementada es:
-
-```text
-GET  /boleta.electronica.semilla
-  -> extraer SEMILLA
-  -> firmar getToken con certificado digital
-POST /boleta.electronica.token (application/xml)
-  -> extraer TOKEN
-```
-
-La semilla se firma con C14N 1.0, RSA-SHA1, digest SHA1, `Reference URI=""` y transform `enveloped-signature`, de acuerdo con el manual de autenticación automática del SII.
-
-No existe endpoint público que entregue el token al POS. La autenticación queda encapsulada dentro de SOLVEA Fiscal para que la caja nunca reciba ni administre credenciales SII.
-
-## Configuración fiscal
-
-```text
-SOLVEA_FISCAL_MODE=certification
-SOLVEA_FISCAL_STATE_DIR=/data/solvea-fiscal
-SII_TIME_ZONE=America/Santiago
-SII_NETWORK_ENABLED=false
-SII_AUTH_BASE_URL=
-SII_HTTP_TIMEOUT_MS=15000
-SII_RUT_EMISOR=...
-SII_RAZON_SOCIAL=...
-SII_GIRO=...
-SII_DIRECCION_ORIGEN=...
-SII_COMUNA_ORIGEN=CONSTITUCION
-SII_CIUDAD_ORIGEN=CONSTITUCION
-SII_CERT_PFX_BASE64=...
-SII_CERT_PASSWORD=...
-SII_CAF_39_XML_BASE64=...
-```
-
-`SII_NETWORK_ENABLED` permanece en `false` hasta que la instancia esté preparada para certificación real. Los endpoints pueden sobreescribirse con variables de entorno para no acoplar el código a una URL fija.
+Antes de iniciar el upload se persiste `submitting`. Si la conexión se corta en una zona incierta, SOLVEA Fiscal conserva `uncertain` y no reenvía automáticamente la misma `idempotencyKey`. Esto evita duplicar envíos por un reinicio entre la recepción SII y la respuesta HTTP.
 
 ## Desarrollo
 
@@ -107,28 +189,28 @@ Node.js 24 o superior.
 
 ## Integración de la boti
 
-Botillería San Pablo ya está preparada para usar este servicio cuando existan:
+Botillería San Pablo usa:
 
 ```text
 SOLVEA_FISCAL_URL=https://<solvea-fiscal>
 SOLVEA_FISCAL_TOKEN=<token compartido>
 ```
 
-El POS mantiene su flujo de caja; toda la identidad tributaria y autenticación SII queda en SOLVEA Fiscal.
+El POS conserva el flujo de caja y SOLVEA Fiscal concentra certificado, CAF, autenticación, envío y seguimiento tributario.
 
-## Hoja de ruta SII
+## Hoja de ruta restante
 
-1. ~~Parser CAF + reserva segura de folios 39/41.~~
-2. ~~Construcción DD/TED y firma con la llave privada del CAF.~~
-3. ~~Carga PFX y firma XMLDSIG completa del DTE.~~
-4. ~~Firma de semilla + cliente REST de obtención de token SII.~~
-5. Verificar criptográficamente la firma del SII sobre el CAF con la llave oficial aplicable.
-6. Construir `EnvioBOLETA`, enviar DTE y guardar Track ID.
-7. Consulta de estado, persistencia y worker de reintentos.
-8. Resumen de Ventas Diarias / consumo de folios y notas de crédito.
-9. Set de pruebas y certificación del primer RUT.
-10. Persistencia transaccional multi-instancia para producción.
+1. ~~CAF + reserva segura de folios 39/41.~~
+2. ~~DD/TED + firma con llave CAF.~~
+3. ~~PFX + XMLDSIG del DTE.~~
+4. ~~Semilla/token SII.~~
+5. ~~`EnvioBOLETA` + upload + Track ID.~~
+6. ~~Consulta manual/API de Track ID y clasificación de aceptación/rechazo.~~
+7. Ejecutar pruebas reales del set de certificación con el primer RUT.
+8. Verificar la firma del SII sobre el CAF con la llave pública oficial aplicable.
+9. Implementar Resumen de Ventas Diarias/consumo de folios y documentos de ajuste requeridos.
+10. Agregar worker de conciliación y persistencia transaccional multi-instancia antes de producción.
 
 ## Seguridad
 
-Nunca subir certificados, contraseñas, CAF ni tokens al repositorio. El token SII no se devuelve al POS y las llamadas externas permanecen deshabilitadas hasta activarlas explícitamente.
+Nunca subir certificados, contraseñas, CAF ni tokens al repositorio. Producción permanece deshabilitada hasta terminar la certificación y el endurecimiento operacional.
