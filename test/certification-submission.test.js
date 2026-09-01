@@ -355,9 +355,14 @@ test('RCOF real: al existir una corrida con folios reservados, usa 46-50 en vez 
   });
 });
 
+function folioOf(entry) { return entry && typeof entry === 'object' ? entry.folio : entry; }
+
 function fakeLookupClient(resultByFolio) {
   return {
-    checkDocuments: async ({ folios }) => folios.map((folio) => resultByFolio[folio] || { folio, result: 'UNKNOWN', codigo: '', descripcion: '' })
+    checkDocuments: async ({ folios }) => folios.map((entry) => {
+      const folio = folioOf(entry);
+      return resultByFolio[folio] || { folio, result: 'UNKNOWN', codigo: '', descripcion: '' };
+    })
   };
 }
 
@@ -401,11 +406,12 @@ test('checkFolios: si ya existe una corrida real, consulta esos folios (no el ra
     await submitService.submit();
 
     let queriedFolios = null;
-    const lookupClient = { checkDocuments: async ({ folios }) => { queriedFolios = folios; return folios.map((folio) => ({ folio, result: 'FOUND', codigo: 'DOK', descripcion: '' })); } };
+    const lookupClient = { checkDocuments: async ({ folios }) => { queriedFolios = folios; return folios.map((entry) => ({ folio: folioOf(entry), result: 'FOUND', codigo: 'DOK', descripcion: '' })); } };
     const checkService = new CertificationSubmissionService(config, { folioStore, runStore, authClient: fakeAuthClient(), lookupClient });
     const { source, results } = await checkService.checkFolios();
     assert.equal(source, 'run');
-    assert.deepEqual(queriedFolios, [46, 47, 48, 49, 50]);
+    assert.deepEqual(queriedFolios.map(folioOf), [46, 47, 48, 49, 50]);
+    assert.deepEqual(queriedFolios.map((e) => e.monto), [29800, 2040, 4100, 14720, 3500]);
     assert.ok(results.every((r) => r.result === 'FOUND'));
   });
 });

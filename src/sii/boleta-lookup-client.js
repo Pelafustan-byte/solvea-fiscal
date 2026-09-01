@@ -21,6 +21,13 @@
 //     TMD/TMC/MMD/MMC/AND/ANC = el documento original existe y fue modificado/anulado por
 //       una nota de crédito o débito posterior.
 // Errores: 400/401/404/405/500 devuelven texto plano (schema Error: string), no JSON.
+//
+// Nota empírica (verificado contra apicert.sii.cl en certificación, 2026-09-01): aunque el
+// spec marca rut_receptor/dv_receptor/monto/fechaEmision como opcionales, el servidor real
+// los exige en la práctica — sin ellos responde HTTP 200 con content-type application/json
+// pero cuerpo en texto plano ("falta rut_receptor", luego "falta monto", luego
+// "falta fechaEmision"). Por eso este cliente permite pasarlos y, en checkDocuments, admite
+// un monto distinto por folio.
 
 import { splitRut } from './envio-boleta.js';
 
@@ -130,12 +137,20 @@ export class SiiBoletaLookupClient {
   /**
    * Consulta varios folios en secuencia (no en paralelo, para no disparar rate limiting del
    * SII — la respuesta ya trae headers X-RateLimit-*). Nunca reserva ni envía nada.
+   *
+   * `folios` acepta números simples (usan el `monto`/`fechaEmision` globales) o, cuando cada
+   * folio necesita un monto distinto (como los 5 casos oficiales, con totales diferentes),
+   * objetos `{ folio, monto, fechaEmision }` que sobrescriben los valores globales.
    */
   async checkDocuments({ token, issuerRut, documentType, folios, receptorRut, monto, fechaEmision }) {
     const results = [];
-    for (const folio of folios) {
+    for (const entry of folios) {
+      const isObject = entry && typeof entry === 'object';
+      const folio = isObject ? entry.folio : entry;
+      const folioMonto = isObject && entry.monto !== undefined ? entry.monto : monto;
+      const folioFecha = isObject && entry.fechaEmision !== undefined ? entry.fechaEmision : fechaEmision;
       // eslint-disable-next-line no-await-in-loop
-      results.push(await this.checkDocument({ token, issuerRut, documentType, folio, receptorRut, monto, fechaEmision }));
+      results.push(await this.checkDocument({ token, issuerRut, documentType, folio, receptorRut, monto: folioMonto, fechaEmision: folioFecha }));
     }
     return results;
   }
