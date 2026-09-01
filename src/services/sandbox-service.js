@@ -18,9 +18,10 @@ function isCertificationEndpoint(url, hostname) {
 export class SandboxService {
   #credentials;
 
-  constructor(config, { authClient } = {}) {
+  constructor(config, { authClient, credentials } = {}) {
     this.config = config;
     this.authClient = authClient || null;
+    this.#credentials = credentials;
   }
 
   #getCredentials() {
