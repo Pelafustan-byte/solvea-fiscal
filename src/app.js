@@ -7,7 +7,8 @@ import { SandboxService } from './services/sandbox-service.js';
 import { StatusService } from './services/status-service.js';
 import { createBrandingStore } from './services/branding-store.js';
 import { extractPfxCredentials } from './crypto/pfx.js';
-import { prepareCertificationSet, validateCertificationSet, prepareCertificationRcof } from './sii/certification-set.js';
+import { prepareCertificationSet, validateCertificationSet, prepareCertificationRcof, previewFolioMapping } from './sii/certification-set.js';
+import { CertificationSubmissionService, certificationRunId } from './services/certification-submission-service.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, '..', 'public');
@@ -65,6 +66,7 @@ export function createApp(config) {
   const statusService = new StatusService(config, { submissionStore: issueService.submissionStore });
   const sandboxService = new SandboxService(config);
   const brandingStore = createBrandingStore(config);
+  const certificationSubmissionService = new CertificationSubmissionService(config);
   let lastProbe = null;
 
   function certificateStatus() {
@@ -79,6 +81,17 @@ export function createApp(config) {
     } catch (error) {
       return { ok: false, error: error.message };
     }
+  }
+
+  async function currentRun() {
+    let caf;
+    try {
+      caf = configuredCaf(config, 39);
+    } catch {
+      return null;
+    }
+    if (!caf) return null;
+    return certificationSubmissionService.getRun(certificationRunId(caf));
   }
 
   function cafStatus(documentCode) {
@@ -178,6 +191,7 @@ export function createApp(config) {
         if (!authorized(req, config)) return json(res, 401, { error: 'No autorizado.' });
         const ready = readiness(config);
         const folios = await issueService.folioUsage(39);
+        const run = await currentRun();
         return json(res, 200, {
           mode: config.mode,
           certificate: certificateStatus(),
@@ -187,13 +201,20 @@ export function createApp(config) {
           certificationSubmissionEnabled: ready.certificationSubmissionEnabled,
           lastProbe,
           folios: folios || { used: 0, available: 0, from: 0, to: 0 },
-          rcof: ready.rcof
+          rcof: ready.rcof,
+          run: run ? { runId: run.runId, status: run.status, folioFrom: run.folioFrom, folioTo: run.folioTo, trackId: run.trackId } : null
         });
       }
 
       if (req.method === 'GET' && url.pathname === '/v1/certification/set') {
         if (!authorized(req, config)) return json(res, 401, { error: 'No autorizado.' });
-        return json(res, 200, { cases: await prepareCertificationSet(issueService) });
+        const cases = await prepareCertificationSet(issueService);
+        let mapping = null;
+        try {
+          const caf = configuredCaf(config, 39);
+          if (caf) mapping = previewFolioMapping(caf);
+        } catch { /* CAF inválido: sin mapping preview */ }
+        return json(res, 200, { cases, previewMapping: mapping });
       }
 
       if (req.method === 'POST' && url.pathname === '/v1/certification/set/validate') {
@@ -206,8 +227,45 @@ export function createApp(config) {
       if (req.method === 'GET' && url.pathname === '/v1/certification/rcof') {
         if (!authorized(req, config)) return json(res, 401, { error: 'No autorizado.' });
         const cases = await prepareCertificationSet(issueService);
-        const rcof = prepareCertificationRcof(config, cases);
+        const run = await currentRun();
+        const runFolios = run && run.mapping ? run.mapping.map((m) => m.folio) : undefined;
+        const rcof = prepareCertificationRcof(config, cases, { runFolios });
         return json(res, 200, rcof);
+      }
+
+      if (req.method === 'GET' && url.pathname === '/v1/certification/rcof/xml') {
+        if (!authorized(req, config)) return json(res, 401, { error: 'No autorizado.' });
+        const cases = await prepareCertificationSet(issueService);
+        const run = await currentRun();
+        const runFolios = run && run.mapping ? run.mapping.map((m) => m.folio) : undefined;
+        const rcof = prepareCertificationRcof(config, cases, { runFolios });
+        if (!rcof.xml) return json(res, 409, { error: 'RCOF no disponible todavía.', errors: rcof.errors });
+        const payload = Buffer.from(rcof.xml, 'latin1');
+        res.writeHead(200, {
+          'content-type': 'application/xml; charset=ISO-8859-1',
+          'content-length': payload.length,
+          'content-disposition': `attachment; filename="ConsumoFolios-${rcof.folios?.from || ''}-${rcof.folios?.to || ''}.xml"`,
+          'cache-control': 'no-store'
+        });
+        return res.end(payload);
+      }
+
+      if (req.method === 'GET' && url.pathname === '/v1/certification/run') {
+        if (!authorized(req, config)) return json(res, 401, { error: 'No autorizado.' });
+        const run = await currentRun();
+        return json(res, 200, { run });
+      }
+
+      if (req.method === 'POST' && url.pathname === '/v1/certification/set/submit') {
+        if (!authorized(req, config)) return json(res, 401, { error: 'No autorizado.' });
+        const run = await certificationSubmissionService.submit();
+        return json(res, 202, { run });
+      }
+
+      if (req.method === 'POST' && url.pathname === '/v1/certification/set/status') {
+        if (!authorized(req, config)) return json(res, 401, { error: 'No autorizado.' });
+        const run = await certificationSubmissionService.checkStatus();
+        return json(res, 200, { run });
       }
 
       return json(res, 404, { error: 'Ruta no encontrada.' });

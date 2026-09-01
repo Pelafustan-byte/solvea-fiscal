@@ -220,13 +220,34 @@
   </div>
 
   <div class="panel">
+    <h2>Envío real del Set al SII</h2>
+    <p class="hint">Mapping que se usará si el set se envía ahora mismo (folio preview, no reservado todavía):</p>
+    <table id="submitMappingTable">
+      <thead><tr><th>Caso</th><th>Folio</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <div class="toolbar">
+      <span>Estado de la corrida:</span><span class="status-pill borrador" id="runStatusPill">SIN CORRIDA</span>
+    </div>
+    <div class="note-box" id="submitWarning" style="background: var(--danger-bg); color: var(--danger);">
+      Esta operación consumirá definitivamente los folios del CAF activo y enviará el Set al SII. No se puede deshacer.
+    </div>
+    <div class="toolbar">
+      <button id="submitSetBtn" disabled title="Bloqueado: SII_CERTIFICATION_SUBMISSION_ENABLED=false">Enviar Set al SII</button>
+      <button id="checkRunStatusBtn" class="secondary" disabled>Consultar SII</button>
+    </div>
+    <div class="result-box" id="submitResultBox" style="display:none"></div>
+  </div>
+
+  <div class="panel">
     <h2>RCOF de certificación (ConsumoFolios)</h2>
-    <p class="hint">Formato oficial SII "ConsumoFolios" (ConsumoFolio_v10.xsd), exigido por el instructivo de certificación de Boleta Electrónica como envío separado del Set de Boletas. Preparar/validar NO reserva folios ni envía nada al SII.</p>
+    <p class="hint">Formato oficial SII "ConsumoFolios" (ConsumoFolio_v10.xsd), exigido por el instructivo de certificación de Boleta Electrónica como envío separado del Set de Boletas. Preparar/validar NO reserva folios ni envía nada al SII. El envío/upload del RCOF no está automatizado (no hay endpoint SII documentado con certeza para boleta electrónica) — se descarga firmado para subirlo manualmente en el portal del SII.</p>
     <div class="toolbar">
       <span>Estado:</span><span class="status-pill borrador" id="rcofStatusPill">—</span>
     </div>
     <div class="toolbar">
       <button id="loadRcofBtn">Preparar / validar RCOF</button>
+      <button id="downloadRcofBtn" class="secondary" disabled>Descargar RCOF firmado</button>
     </div>
     <div class="result-box" id="rcofResultBox" style="display:none"></div>
   </div>
@@ -290,7 +311,8 @@ const state = {
   items: [{ name: 'Producto de prueba', quantity: 1, unitPrice: 1990, exempt: false }],
   lastPrepared: null,
   lastIssueResponse: null,
-  lastIdemKey: ''
+  lastIdemKey: '',
+  lastRun: null
 };
 $('tokenInput').value = state.token;
 
@@ -593,6 +615,32 @@ function statusCard(label, value, tone) {
   return `<div class="card"><div class="label">${label}</div><div class="value" style="color:${tone === 'ok' ? 'var(--ok)' : tone === 'danger' ? 'var(--danger)' : 'inherit'}">${value}</div></div>`;
 }
 
+const RUN_STATUS_CLASS = {
+  RESERVED: 'preparado', SUBMITTING: 'procesando', SUBMITTED: 'procesando',
+  PROCESSING: 'procesando', ACCEPTED: 'aceptado', REJECTED: 'rechazado', UNCERTAIN: 'rechazado'
+};
+
+function applyRunState(run, certificationSubmissionEnabled) {
+  state.lastRun = run || null;
+  const pill = $('runStatusPill');
+  if (!run) {
+    pill.textContent = 'SIN CORRIDA';
+    pill.className = 'status-pill borrador';
+  } else {
+    pill.textContent = run.status;
+    pill.className = 'status-pill ' + (RUN_STATUS_CLASS[run.status] || 'borrador');
+  }
+  $('checkRunStatusBtn').disabled = !run || !run.trackId;
+  $('downloadRcofBtn').disabled = !run;
+  const canSubmit = certificationSubmissionEnabled && (!run || run.status === 'UNCERTAIN' ? false : !['SUBMITTING', 'SUBMITTED', 'PROCESSING', 'ACCEPTED', 'REJECTED'].includes(run?.status));
+  $('submitSetBtn').disabled = !canSubmit;
+  if (run) {
+    const box = $('submitResultBox');
+    box.style.display = 'block';
+    box.textContent = JSON.stringify(run, null, 2);
+  }
+}
+
 async function loadCertStatus() {
   const cardsEl = $('certStatusCards');
   cardsEl.innerHTML = 'Cargando…';
@@ -613,9 +661,15 @@ async function loadCertStatus() {
     $('cafRangeNote').textContent = s.caf39.ok
       ? `CAF actual: ${s.caf39.from}–${s.caf39.to}. Set de certificación aún no autorizado para emisión.`
       : 'CAF DTE 39 no configurado.';
+    state.certificationSubmissionEnabled = Boolean(s.certificationSubmissionEnabled);
+    applyRunState(s.run, state.certificationSubmissionEnabled);
   } catch (e) {
     cardsEl.innerHTML = 'No se pudo cargar (revisa el token). ' + e.message;
   }
+  try {
+    const setData = await api('/v1/certification/set');
+    renderMappingTable(setData.previewMapping);
+  } catch { /* sin token todavía: se carga al hacer clic en Cargar set */ }
 }
 
 function renderSetTable(cases) {
@@ -627,10 +681,16 @@ function renderSetTable(cases) {
   </tr>`).join('');
 }
 
+function renderMappingTable(mapping) {
+  const tbody = $('submitMappingTable').querySelector('tbody');
+  tbody.innerHTML = (mapping || []).map((m) => `<tr><td>CASO-${m.caso}</td><td>${m.folio}</td></tr>`).join('');
+}
+
 $('loadSetBtn').addEventListener('click', async () => {
   try {
     const data = await api('/v1/certification/set');
     renderSetTable(data.cases);
+    renderMappingTable(data.previewMapping);
   } catch (e) {
     alert('Error: ' + e.message);
   }
@@ -644,6 +704,46 @@ $('validateSetBtn').addEventListener('click', async () => {
     const result = await api('/v1/certification/set/validate', { method: 'POST' });
     renderSetTable(result.cases);
     box.textContent = result.verdict + '\n\n' + (result.errors.length ? 'Errores:\n- ' + result.errors.join('\n- ') : 'Sin errores.') + '\n\nNotas:\n- ' + result.notes.join('\n- ');
+  } catch (e) {
+    box.textContent = 'Error: ' + e.message;
+  }
+});
+
+let submitInFlight = false;
+$('submitSetBtn').addEventListener('click', async () => {
+  if (submitInFlight) return;
+  if (!state.certificationSubmissionEnabled) {
+    alert('Bloqueado: SII_CERTIFICATION_SUBMISSION_ENABLED=false.');
+    return;
+  }
+  const confirmed = confirm('Esta operación consumirá definitivamente los folios del CAF activo (46–50 u otro rango vigente) y enviará el Set al SII. Esta acción NO se puede deshacer. ¿Confirmas?');
+  if (!confirmed) return;
+
+  submitInFlight = true;
+  $('submitSetBtn').disabled = true;
+  const box = $('submitResultBox');
+  box.style.display = 'block';
+  box.textContent = 'Enviando set al SII (un solo upload)…';
+  try {
+    const result = await api('/v1/certification/set/submit', { method: 'POST' });
+    box.textContent = JSON.stringify(result.run, null, 2);
+    applyRunState(result.run, state.certificationSubmissionEnabled);
+  } catch (e) {
+    box.textContent = 'Error: ' + e.message;
+    applyRunState(state.lastRun, state.certificationSubmissionEnabled);
+  } finally {
+    submitInFlight = false;
+  }
+});
+
+$('checkRunStatusBtn').addEventListener('click', async () => {
+  const box = $('submitResultBox');
+  box.style.display = 'block';
+  box.textContent = 'Consultando estado en el SII (Track ID ≠ aceptación)…';
+  try {
+    const result = await api('/v1/certification/set/status', { method: 'POST' });
+    box.textContent = JSON.stringify(result.run, null, 2);
+    applyRunState(result.run, state.certificationSubmissionEnabled);
   } catch (e) {
     box.textContent = 'Error: ' + e.message;
   }
@@ -668,6 +768,27 @@ $('loadRcofBtn').addEventListener('click', async () => {
     pill.textContent = 'ERROR';
     pill.className = 'status-pill rechazado';
     box.textContent = 'Error: ' + e.message;
+  }
+});
+
+$('downloadRcofBtn').addEventListener('click', async () => {
+  try {
+    const res = await fetch('/v1/certification/rcof/xml', { headers: authHeaders() });
+    if (!res.ok) { const body = await res.json().catch(() => ({})); throw new Error(body.error || res.statusText); }
+    const blob = await res.blob();
+    const disposition = res.headers.get('content-disposition') || '';
+    const match = disposition.match(/filename="([^"]+)"/);
+    const filename = match ? match[1] : 'ConsumoFolios.xml';
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    alert('No se pudo descargar el RCOF: ' + e.message);
   }
 });
 
