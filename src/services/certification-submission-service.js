@@ -11,6 +11,7 @@ import { buildUnsignedBoletaDraft } from '../sii/unsigned-boleta.js';
 import { CERTIFICATION_CASES, certificationCaseRequest } from '../sii/certification-set.js';
 import { createFolioStore } from './folio-store.js';
 import { createCertificationRunStore } from './certification-run-store.js';
+import { createCertificationArmStore } from './certification-arm-store.js';
 
 function httpError(status, message) {
   const error = new Error(message);
@@ -47,10 +48,11 @@ const TERMINAL_STATES = new Set(['SUBMITTING', 'SUBMITTED', 'PROCESSING', 'ACCEP
 export class CertificationSubmissionService {
   #certificateCredentials;
 
-  constructor(config, { folioStore, runStore, authClient, boletaClient, lookupClient } = {}) {
+  constructor(config, { folioStore, runStore, armStore, authClient, boletaClient, lookupClient } = {}) {
     this.config = config;
     this.folioStore = folioStore || createFolioStore(config);
     this.runStore = runStore || createCertificationRunStore(config);
+    this.armStore = armStore || createCertificationArmStore(config);
     this.authClient = authClient || null;
     this.boletaClient = boletaClient || null;
     this.lookupClient = lookupClient || null;
@@ -111,6 +113,22 @@ export class CertificationSubmissionService {
   }
 
   /**
+   * Segundo nivel de seguridad, independiente del master gate: arma un permiso de un solo uso
+   * con TTL corto para el CAF/rango actual. submit() lo consume atómicamente antes de reservar
+   * folios. No requiere el master gate para poder prepararlo con anticipación, pero submit()
+   * exige ambos (gate Y arm) para proceder.
+   */
+  async arm({ ttlMs } = {}) {
+    const caf = configuredCaf(this.config, 39);
+    if (!caf) throw httpError(503, 'CAF 39 no configurado.');
+    return this.armStore.arm({ cafId: caf.id, from: caf.from, to: caf.from + CERTIFICATION_CASES.length - 1, ttlMs });
+  }
+
+  async getArmStatus() {
+    return this.armStore.get();
+  }
+
+  /**
    * Reserva atómicamente (idempotente por runId) los N folios contiguos del CAF 39 y arma el
    * mapping CASO-i -> folio. NO firma ni envía nada. Requiere el safety lock abierto porque
    * SÍ consume folios reales del CAF.
@@ -162,6 +180,16 @@ export class CertificationSubmissionService {
     }
     if (existing && existing.status === 'UNCERTAIN') {
       throw httpError(409, 'La corrida anterior quedó en estado incierto (UNCERTAIN) tras un fallo de red. Consulta el estado real en el SII (POST /v1/certification/set/status) antes de reintentar el envío — no se reintenta automáticamente ni se reutilizan folios a ciegas.');
+    }
+
+    // Segundo nivel de seguridad: se consume el arm ATÓMICAMENTE aquí, antes de reservar
+    // folios o subir nada. Queda desarmado a partir de este punto pase lo que pase después
+    // (incluido un 401/500/timeout del SII), sin depender de ningún redeploy.
+    const expectedFrom = caf.from;
+    const expectedTo = caf.from + CERTIFICATION_CASES.length - 1;
+    const armResult = await this.armStore.consume({ cafId: caf.id, from: expectedFrom, to: expectedTo });
+    if (!armResult.ok) {
+      throw httpError(423, `Envío bloqueado: no hay un arm vigente para este CAF/rango (${armResult.reason}). Ejecuta POST /v1/certification/arm primero.`);
     }
 
     const credentials = this.#getCertificateCredentials();

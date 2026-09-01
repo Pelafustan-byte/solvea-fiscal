@@ -135,6 +135,32 @@ test('safety lock: submit() no reserva folios ni llama a la red si certification
   });
 });
 
+test('submit() con lock abierto pero SIN arm queda bloqueado y no reserva folios', async () => {
+  await withEnv({ sii: { certificationSubmissionEnabled: true } }, async ({ config, folioStore, runStore }) => {
+    const service = new CertificationSubmissionService(config, { folioStore, runStore, authClient: fakeAuthClient(), boletaClient: fakeBoletaClient() });
+    await assert.rejects(
+      () => service.submit(),
+      (error) => { assert.equal(error.status, 423); assert.match(error.message, /arm/); return true; }
+    );
+    const caf = configuredCaf(config, 39);
+    const usage = await folioStore.peek({ caf });
+    assert.equal(usage.used, 0, 'sin arm no debe reservar folios');
+    const run = await service.getRun(certificationRunId(caf));
+    assert.equal(run, null);
+  });
+});
+
+test('submit() con un arm ya consumido previamente queda bloqueado (no revive el arm)', async () => {
+  await withEnv({ sii: { certificationSubmissionEnabled: true } }, async ({ config, folioStore, runStore }) => {
+    const service = new CertificationSubmissionService(config, { folioStore, runStore, authClient: fakeAuthClient(), boletaClient: fakeBoletaClient() });
+    const caf = configuredCaf(config, 39);
+    await service.arm();
+    const alreadyConsumed = await service.armStore.consume({ cafId: caf.id, from: 46, to: 50 });
+    assert.equal(alreadyConsumed.ok, true, 'precondición: el consumo directo debe funcionar');
+    await assert.rejects(() => service.submit(), (error) => { assert.equal(error.status, 423); return true; });
+  });
+});
+
 test('reserveSet: exige el lock igual que submit() (consume folios reales)', async () => {
   await withEnv({}, async ({ config, folioStore, runStore }) => {
     const service = new CertificationSubmissionService(config, { folioStore, runStore });
@@ -216,6 +242,7 @@ test('submit() feliz: arma un único EnvioBOLETA con 5 DTE, sube una sola vez y 
     boletaClient.submit = async (...args) => { submitCalls += 1; return originalSubmit(...args); };
 
     const service = new CertificationSubmissionService(config, { folioStore, runStore, authClient: fakeAuthClient(), boletaClient });
+    await service.arm();
     const run = await service.submit();
 
     assert.equal(submitCalls, 1, 'debe hacer exactamente un upload, no cinco');
@@ -238,6 +265,7 @@ test('submit() es idempotente: un segundo llamado no reserva ni sube de nuevo', 
     boletaClient.submit = async (...args) => { submitCalls += 1; return originalSubmit(...args); };
     const service = new CertificationSubmissionService(config, { folioStore, runStore, authClient: fakeAuthClient(), boletaClient });
 
+    await service.arm();
     const first = await service.submit();
     const second = await service.submit();
     assert.equal(submitCalls, 1);
@@ -250,6 +278,7 @@ test('submit() con fallo de red deja el estado UNCERTAIN y NUNCA libera los foli
     const boletaClient = fakeBoletaClient({ shouldFail: true });
     const service = new CertificationSubmissionService(config, { folioStore, runStore, authClient: fakeAuthClient(), boletaClient });
 
+    await service.arm();
     await assert.rejects(() => service.submit());
     const caf = configuredCaf(config, 39);
     const run = await service.getRun(certificationRunId(caf));
@@ -277,6 +306,7 @@ test('checkStatus(): consulta el SII con el Track ID persistido y actualiza el e
       folioStore, runStore, authClient: fakeAuthClient(),
       boletaClient: fakeBoletaClient({ trackId: '111222333444555' })
     });
+    await service.arm();
     await service.submit();
 
     const acceptedStatusClient = fakeBoletaClient({
@@ -301,6 +331,7 @@ test('EnvioBOLETA con los 5 DTE reales: exactamente un SetDTE, 5 DTE, SubTotDTE 
     const originalSubmit = boletaClient.submit;
     boletaClient.submit = async (args) => { capturedXml = args.xml; return originalSubmit(args); };
     const service = new CertificationSubmissionService(config, { folioStore, runStore, authClient: fakeAuthClient(), boletaClient });
+    await service.arm();
     await service.submit();
 
     const doc = new DOMParser().parseFromString(capturedXml, 'text/xml');
@@ -342,6 +373,7 @@ test('RCOF real: al existir una corrida con folios reservados, usa 46-50 en vez 
     const { prepareCertificationSet, prepareCertificationRcof } = await import('../src/sii/certification-set.js');
     const { IssueService } = await import('../src/services/issue-service.js');
     const service = new CertificationSubmissionService(config, { folioStore, runStore, authClient: fakeAuthClient(), boletaClient: fakeBoletaClient() });
+    await service.arm();
     const run = await service.submit();
 
     const issueService = new IssueService(config, { folioStore });
@@ -403,6 +435,7 @@ test('checkFolios: no llama nunca a boletaClient.submit (no envía, sólo consul
 test('checkFolios: si ya existe una corrida real, consulta esos folios (no el rango preview)', async () => {
   await withEnv({ sii: { certificationSubmissionEnabled: true } }, async ({ config, folioStore, runStore }) => {
     const submitService = new CertificationSubmissionService(config, { folioStore, runStore, authClient: fakeAuthClient(), boletaClient: fakeBoletaClient() });
+    await submitService.arm();
     await submitService.submit();
 
     let queriedFolios = null;
@@ -428,6 +461,7 @@ test('run UNCERTAIN preserva diagnóstico upstream (status/content-type/body) si
       getSubmissionStatus: async () => ({})
     };
     const service = new CertificationSubmissionService(config, { folioStore, runStore, authClient: fakeAuthClient(), boletaClient });
+    await service.arm();
     await assert.rejects(() => service.submit());
 
     const caf = configuredCaf(config, 39);

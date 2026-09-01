@@ -1,13 +1,13 @@
-import { mkdir, open, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import path from 'node:path';
+import { writeFileDurable } from '../lib/durable-fs.js';
+import { withFileLock } from '../lib/file-lock.js';
 
 function httpError(status, message) {
   const error = new Error(message);
   error.status = status;
   return error;
 }
-
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export class MemoryFolioStore {
   #state = { nextByCaf: {}, reservations: {} };
@@ -88,44 +88,11 @@ export class FileFolioStore {
   }
 
   async #writeState(state) {
-    await mkdir(this.stateDir, { recursive: true, mode: 0o700 });
-    const temporary = `${this.stateFile}.${process.pid}.${Date.now()}.tmp`;
-    await writeFile(temporary, `${JSON.stringify(state, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
-    await rename(temporary, this.stateFile);
-  }
-
-  async #removeStaleLock() {
-    try {
-      const info = await stat(this.lockFile);
-      if (Date.now() - info.mtimeMs > 30_000) await unlink(this.lockFile);
-    } catch (error) {
-      if (error.code !== 'ENOENT') throw error;
-    }
+    await writeFileDurable(this.stateFile, `${JSON.stringify(state, null, 2)}\n`);
   }
 
   async #withLock(handler) {
-    await mkdir(this.stateDir, { recursive: true, mode: 0o700 });
-    const deadline = Date.now() + 5_000;
-    let handle;
-    while (!handle) {
-      try {
-        handle = await open(this.lockFile, 'wx', 0o600);
-      } catch (error) {
-        if (error.code !== 'EEXIST') throw error;
-        await this.#removeStaleLock();
-        if (Date.now() >= deadline) throw httpError(503, 'No fue posible adquirir el bloqueo de reserva de folios.');
-        await sleep(25 + Math.floor(Math.random() * 50));
-      }
-    }
-
-    try {
-      return await handler();
-    } finally {
-      await handle.close().catch(() => {});
-      await unlink(this.lockFile).catch((error) => {
-        if (error.code !== 'ENOENT') throw error;
-      });
-    }
+    return withFileLock({ dir: this.stateDir, lockFile: this.lockFile }, handler);
   }
 
   async peek({ caf }) {

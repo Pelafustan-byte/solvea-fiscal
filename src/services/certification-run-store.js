@@ -1,5 +1,6 @@
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import path from 'node:path';
+import { writeFileDurable } from '../lib/durable-fs.js';
 
 export class MemoryCertificationRunStore {
   #runs = new Map();
@@ -28,10 +29,7 @@ export class FileCertificationRunStore {
   }
 
   async #write(state) {
-    await mkdir(this.dir, { recursive: true, mode: 0o700 });
-    const tmp = `${this.file}.${process.pid}.${Date.now()}.tmp`;
-    await writeFile(tmp, `${JSON.stringify(state, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
-    await rename(tmp, this.file);
+    await writeFileDurable(this.file, `${JSON.stringify(state, null, 2)}\n`);
   }
 
   async #serialized(handler) {
