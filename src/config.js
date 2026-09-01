@@ -47,7 +47,9 @@ export function loadConfig(env = process.env) {
       certificatePfxBase64: text(env.SII_CERT_PFX_BASE64),
       certificatePassword: text(env.SII_CERT_PASSWORD),
       caf39Base64: text(env.SII_CAF_39_XML_BASE64),
-      caf41Base64: text(env.SII_CAF_41_XML_BASE64)
+      caf41Base64: text(env.SII_CAF_41_XML_BASE64),
+      caf33Base64: text(env.SII_CAF_33_XML_BASE64),
+      caf34Base64: text(env.SII_CAF_34_XML_BASE64)
     }
   };
 }
@@ -105,6 +107,12 @@ export function readiness(config) {
       siiStatusRefresh: true,
       sandboxProbe: true,
       siiLiveFlow: Boolean(config.sii?.networkEnabled && submissionReady)
+    },
+    documentTypesAvailable: {
+      boleta_afecta: Boolean(config.credentials.caf39Base64),
+      boleta_exenta: Boolean(config.credentials.caf41Base64),
+      factura_afecta: Boolean(config.credentials.caf33Base64),
+      factura_exenta: Boolean(config.credentials.caf34Base64)
     },
     missing: [...issuerMissing, ...credentialMissing, ...submissionMissing],
     blockers: [

@@ -1,4 +1,4 @@
-import { computeTaxTotals } from '../domain/totals.js';
+import { computeTaxTotals, FACTURA_CODES } from '../domain/totals.js';
 import { tag } from '../lib/xml.js';
 import { siiDate, siiTimestamp } from './ted.js';
 
@@ -8,7 +8,7 @@ function detailXml(item, index) {
 
 function totalsXml(document) {
   const totals = computeTaxTotals(document);
-  if (document.documentCode === 41) {
+  if ([41, 34].includes(Number(document.documentCode))) {
     return `<Totales>${tag('MntExe', totals.exempt)}${tag('MntTotal', totals.total)}</Totales>`;
   }
   return `<Totales>${tag('MntNeto', totals.net)}${totals.exempt > 0 ? tag('MntExe', totals.exempt) : ''}${tag('IVA', totals.vat)}${tag('MntTotal', totals.total)}</Totales>`;
@@ -28,13 +28,19 @@ export function buildUnsignedBoletaDraft({
   signatureTimestamp = null,
   timeZone = 'America/Santiago'
 }) {
-  const receiverRut = document.recipient.rut || '66666666-6';
-  const receiverName = document.recipient.legalName || 'Consumidor Final';
+  const isFactura = FACTURA_CODES.has(Number(document.documentCode));
+  const receiverRut = document.recipient.rut || (isFactura ? '' : '66666666-6');
+  const receiverName = document.recipient.legalName || (isFactura ? '' : 'Consumidor Final');
   const documentId = provisionalFolio > 0
     ? `F${provisionalFolio}T${document.documentCode}`
     : `SOLVEA-DRAFT-${document.sale.id}`;
 
-  const encabezado = `<Encabezado><IdDoc>${tag('TipoDTE', document.documentCode)}${tag('Folio', provisionalFolio)}${tag('FchEmis', siiDate(document.sale.completedAt, timeZone))}${tag('IndServicio', 3)}${tag('MedioPago', paymentMethodCode)}</IdDoc><Emisor>${tag('RUTEmisor', issuer.rut)}${tag('RznSocEmisor', issuer.legalName)}${tag('GiroEmisor', issuer.activity)}${tag('CdgSIISucur', issuer.branchCode)}${tag('DirOrigen', issuer.address)}${tag('CmnaOrigen', issuer.commune)}${tag('CiudadOrigen', issuer.city)}</Emisor><Receptor>${tag('RUTRecep', receiverRut)}${tag('RznSocRecep', receiverName)}</Receptor>${totalsXml(document)}</Encabezado>`;
+  const receptorTail = isFactura
+    ? `${tag('GiroRecep', document.recipient.activity)}${tag('DirRecep', document.recipient.address)}${tag('CmnaRecep', document.recipient.commune)}${tag('CiudadRecep', document.recipient.city)}`
+    : '';
+  const idDocTail = isFactura ? '' : tag('IndServicio', 3);
+
+  const encabezado = `<Encabezado><IdDoc>${tag('TipoDTE', document.documentCode)}${tag('Folio', provisionalFolio)}${tag('FchEmis', siiDate(document.sale.completedAt, timeZone))}${idDocTail}${tag('MedioPago', paymentMethodCode)}</IdDoc><Emisor>${tag('RUTEmisor', issuer.rut)}${tag('RznSocEmisor', issuer.legalName)}${tag('GiroEmisor', issuer.activity)}${tag('CdgSIISucur', issuer.branchCode)}${tag('DirOrigen', issuer.address)}${tag('CmnaOrigen', issuer.commune)}${tag('CiudadOrigen', issuer.city)}</Emisor><Receptor>${tag('RUTRecep', receiverRut)}${tag('RznSocRecep', receiverName)}${receptorTail}</Receptor>${totalsXml(document)}</Encabezado>`;
   const details = document.items.map(detailXml).join('');
   const references = referenceXml(document.reference);
   const fiscalTail = tedXml

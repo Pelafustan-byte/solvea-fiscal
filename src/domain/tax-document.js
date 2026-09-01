@@ -2,8 +2,13 @@ import { isValidRut, normalizeRut } from './rut.js';
 
 export const DOCUMENT_TYPES = {
   boleta_afecta: 39,
-  boleta_exenta: 41
+  boleta_exenta: 41,
+  factura_afecta: 33,
+  factura_exenta: 34
 };
+
+const FACTURA_CODES = new Set([33, 34]);
+export const EXEMPT_CODES = new Set([41, 34]);
 
 const money = (value) => Number.isInteger(Number(value)) ? Number(value) : NaN;
 
@@ -16,7 +21,7 @@ function fail(message) {
 export function validateIssueRequest(input) {
   if (!input || typeof input !== 'object') fail('Payload JSON requerido.');
   if (!input.idempotencyKey || String(input.idempotencyKey).length > 180) fail('idempotencyKey inválida.');
-  if (!DOCUMENT_TYPES[input.documentType]) fail('Botillería San Pablo inicia sólo con boleta_afecta o boleta_exenta.');
+  if (!DOCUMENT_TYPES[input.documentType]) fail('documentType debe ser boleta_afecta, boleta_exenta, factura_afecta o factura_exenta.');
 
   const sale = input.sale || {};
   if (!sale.id) fail('sale.id es obligatorio.');
@@ -39,7 +44,7 @@ export function validateIssueRequest(input) {
     if (!Number.isInteger(subtotal) || subtotal < 0) fail(`items[${index}].subtotal inválido.`);
     if (!String(item.name || '').trim()) fail(`items[${index}].name es obligatorio.`);
 
-    const exempt = input.documentType === 'boleta_exenta' ? true : Boolean(item.exempt);
+    const exempt = EXEMPT_CODES.has(DOCUMENT_TYPES[input.documentType]) ? true : Boolean(item.exempt);
     const unitMeasure = String(item.unitMeasure ?? item.unit ?? '').trim();
     if (unitMeasure.length > 4) fail(`items[${index}].unitMeasure excede 4 caracteres.`);
 
@@ -68,9 +73,20 @@ export function validateIssueRequest(input) {
     fail('Las ventas mixtas afectas/exentas con descuento global requieren distribución tributaria por línea.');
   }
 
+  const documentCode = DOCUMENT_TYPES[input.documentType];
+  const isFactura = FACTURA_CODES.has(documentCode);
+
   const recipient = input.recipient || {};
   const recipientRut = normalizeRut(recipient.rut);
   if (recipientRut && !isValidRut(recipientRut)) fail('RUT receptor inválido.');
+
+  if (isFactura) {
+    if (!recipientRut || !isValidRut(recipientRut)) fail('La factura requiere recipient.rut válido.');
+    if (!String(recipient.legalName || '').trim()) fail('La factura requiere recipient.legalName.');
+    if (!String(recipient.activity || '').trim()) fail('La factura requiere recipient.activity (giro).');
+    if (!String(recipient.address || '').trim()) fail('La factura requiere recipient.address.');
+    if (!String(recipient.commune || '').trim()) fail('La factura requiere recipient.commune.');
+  }
 
   const rawReference = input.reference || null;
   let reference = null;
@@ -98,7 +114,11 @@ export function validateIssueRequest(input) {
     },
     recipient: {
       rut: recipientRut,
-      legalName: String(recipient.legalName || '').trim().slice(0, 100)
+      legalName: String(recipient.legalName || '').trim().slice(0, 100),
+      activity: String(recipient.activity || '').trim().slice(0, 40),
+      address: String(recipient.address || '').trim().slice(0, 70),
+      commune: String(recipient.commune || '').trim().slice(0, 20),
+      city: String(recipient.city || '').trim().slice(0, 20)
     },
     items: normalizedItems,
     reference
