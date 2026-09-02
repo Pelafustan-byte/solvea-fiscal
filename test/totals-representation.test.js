@@ -70,6 +70,33 @@ test('factura expone receptor extendido con email opcional en la representación
   assert.equal(value.recipient.email, 'cliente@empresa.cl');
 });
 
+test('factura con descuento por línea calcula neto sobre el monto ya descontado', () => {
+  const totals = computeTaxTotals({
+    documentCode: 33,
+    items: [{ subtotal: 1000, discountPercent: 10, exempt: false }]
+  });
+  // neto = 1000 - 100 = 900; IVA = round(900*0.19) = 171; total = 1071
+  assert.deepEqual(totals, { net: 900, exempt: 0, vatRate: 19, vat: 171, total: 1071 });
+});
+
+test('factura con descuento global sólo reduce los ítems afectos, no los exentos', () => {
+  const totals = computeTaxTotals({
+    documentCode: 33,
+    sale: { discountPercent: 10 },
+    items: [
+      { subtotal: 1000, exempt: false },
+      { subtotal: 500, exempt: true }
+    ]
+  });
+  // netoAfecto = 1000; descuento global 10% = 100; neto = 900; IVA = round(900*0.19) = 171
+  assert.deepEqual(totals, { net: 900, exempt: 500, vatRate: 19, vat: 171, total: 1571 });
+});
+
+test('boleta (39) no cambia su convención bruto-incluido tras agregar el cálculo neto de factura', () => {
+  const totals = computeTaxTotals(document());
+  assert.deepEqual(totals, { net: 18908, exempt: 0, vatRate: 19, vat: 3592, total: 22500 });
+});
+
 test('rechaza recipient.email con formato inválido', () => {
   assert.throws(() => validateIssueRequest({
     idempotencyKey: 'fac-email-bad',

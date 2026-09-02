@@ -1,14 +1,19 @@
 import { isValidRut, normalizeRut } from './rut.js';
+import { NET_PRICED_CODES } from './totals.js';
 
 export const DOCUMENT_TYPES = {
   boleta_afecta: 39,
   boleta_exenta: 41,
   factura_afecta: 33,
-  factura_exenta: 34
+  factura_exenta: 34,
+  nota_credito: 61,
+  nota_debito: 56
 };
 
-const FACTURA_CODES = new Set([33, 34]);
+// Factura, Nota de Crédito y Nota de Débito exigen identificación completa del receptor.
+const FULL_RECEPTOR_CODES = new Set([33, 34, 56, 61]);
 export const EXEMPT_CODES = new Set([41, 34]);
+const percent = (value) => Number.isFinite(Number(value)) ? Number(value) : NaN;
 
 const money = (value) => Number.isInteger(Number(value)) ? Number(value) : NaN;
 
@@ -21,7 +26,7 @@ function fail(message) {
 export function validateIssueRequest(input) {
   if (!input || typeof input !== 'object') fail('Payload JSON requerido.');
   if (!input.idempotencyKey || String(input.idempotencyKey).length > 180) fail('idempotencyKey inválida.');
-  if (!DOCUMENT_TYPES[input.documentType]) fail('documentType debe ser boleta_afecta, boleta_exenta, factura_afecta o factura_exenta.');
+  if (!DOCUMENT_TYPES[input.documentType]) fail('documentType debe ser boleta_afecta, boleta_exenta, factura_afecta, factura_exenta, nota_credito o nota_debito.');
 
   const sale = input.sale || {};
   if (!sale.id) fail('sale.id es obligatorio.');
@@ -32,6 +37,9 @@ export function validateIssueRequest(input) {
   const items = Array.isArray(input.items) ? input.items : [];
   if (!items.length) fail('La boleta requiere al menos un ítem.');
   if (items.length > 1000) fail('La boleta excede 1000 líneas de detalle.');
+
+  const documentCode = DOCUMENT_TYPES[input.documentType];
+  const isNetPriced = NET_PRICED_CODES.has(documentCode);
 
   let computedTotal = 0;
   let exemptTotal = 0;
@@ -44,9 +52,16 @@ export function validateIssueRequest(input) {
     if (!Number.isInteger(subtotal) || subtotal < 0) fail(`items[${index}].subtotal inválido.`);
     if (!String(item.name || '').trim()) fail(`items[${index}].name es obligatorio.`);
 
-    const exempt = EXEMPT_CODES.has(DOCUMENT_TYPES[input.documentType]) ? true : Boolean(item.exempt);
+    const exempt = EXEMPT_CODES.has(documentCode) ? true : Boolean(item.exempt);
     const unitMeasure = String(item.unitMeasure ?? item.unit ?? '').trim();
     if (unitMeasure.length > 4) fail(`items[${index}].unitMeasure excede 4 caracteres.`);
+
+    const discountPercentRaw = item.discountPercent;
+    const discountPercent = discountPercentRaw === undefined || discountPercentRaw === null || discountPercentRaw === ''
+      ? 0 : percent(discountPercentRaw);
+    if (!Number.isFinite(discountPercent) || discountPercent < 0 || discountPercent > 100) {
+      fail(`items[${index}].discountPercent debe estar entre 0 y 100.`);
+    }
 
     computedTotal += subtotal;
     if (exempt) exemptTotal += subtotal;
@@ -58,13 +73,17 @@ export function validateIssueRequest(input) {
       unitPrice,
       subtotal,
       exempt,
-      unitMeasure
+      unitMeasure,
+      discountPercent
     };
   });
 
   // El POS puede aplicar descuento a nivel de venta; por eso la suma de líneas puede ser mayor al total.
-  if (computedTotal < total) fail('La suma de subtotales de ítems no puede ser menor al total de la venta.');
-  if (exemptTotal > total) fail('La suma de ítems exentos no puede superar el total de la venta.');
+  // Para Factura/NC/ND (isNetPriced) los ítems son precios netos y el total incluye IVA agregado —
+  // esa comparación bruto-incluido no aplica; el total real lo calcula computeTaxTotals a partir
+  // de los ítems (ver domain/totals.js), no se contrasta aquí contra sale.total.
+  if (!isNetPriced && computedTotal < total) fail('La suma de subtotales de ítems no puede ser menor al total de la venta.');
+  if (exemptTotal > total && !isNetPriced) fail('La suma de ítems exentos no puede superar el total de la venta.');
 
   const discount = Math.max(0, money(sale.discount) || 0);
   const hasAffectedItems = normalizedItems.some((item) => !item.exempt);
@@ -73,8 +92,12 @@ export function validateIssueRequest(input) {
     fail('Las ventas mixtas afectas/exentas con descuento global requieren distribución tributaria por línea.');
   }
 
-  const documentCode = DOCUMENT_TYPES[input.documentType];
-  const isFactura = FACTURA_CODES.has(documentCode);
+  const discountPercentRaw = sale.discountPercent;
+  const discountPercent = discountPercentRaw === undefined || discountPercentRaw === null || discountPercentRaw === ''
+    ? 0 : percent(discountPercentRaw);
+  if (!Number.isFinite(discountPercent) || discountPercent < 0 || discountPercent > 100) {
+    fail('sale.discountPercent debe estar entre 0 y 100.');
+  }
 
   const recipient = input.recipient || {};
   const recipientRut = normalizeRut(recipient.rut);
@@ -82,7 +105,7 @@ export function validateIssueRequest(input) {
   const recipientEmail = String(recipient.email || '').trim().slice(0, 80);
   if (recipientEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(recipientEmail)) fail('recipient.email inválido.');
 
-  if (isFactura) {
+  if (FULL_RECEPTOR_CODES.has(documentCode)) {
     if (!recipientRut || !isValidRut(recipientRut)) fail('La factura requiere recipient.rut válido.');
     if (!String(recipient.legalName || '').trim()) fail('La factura requiere recipient.legalName.');
     if (!String(recipient.activity || '').trim()) fail('La factura requiere recipient.activity (giro).');
@@ -90,6 +113,7 @@ export function validateIssueRequest(input) {
     if (!String(recipient.commune || '').trim()) fail('La factura requiere recipient.commune.');
   }
 
+  const isNoteType = documentCode === 56 || documentCode === 61;
   const rawReference = input.reference || null;
   let reference = null;
   if (rawReference) {
@@ -99,6 +123,21 @@ export function validateIssueRequest(input) {
     if (code.length > 18) fail('reference.code excede 18 caracteres.');
     if (reason.length > 90) fail('reference.reason excede 90 caracteres.');
     reference = { code, reason };
+    if (isNoteType) {
+      const referencedDocumentType = Number(rawReference.documentType);
+      const referencedFolio = Number(rawReference.folio);
+      const referencedDate = String(rawReference.date || '').trim();
+      if (!Number.isInteger(referencedDocumentType) || referencedDocumentType <= 0) {
+        fail('reference.documentType (TipoDTE referenciado) es obligatorio para nota_credito/nota_debito.');
+      }
+      if (!Number.isInteger(referencedFolio) || referencedFolio <= 0) {
+        fail('reference.folio es obligatorio para nota_credito/nota_debito.');
+      }
+      if (!referencedDate) fail('reference.date es obligatorio para nota_credito/nota_debito.');
+      reference = { ...reference, documentType: referencedDocumentType, folio: referencedFolio, date: referencedDate };
+    }
+  } else if (isNoteType) {
+    fail('nota_credito/nota_debito requieren reference (documento que referencian).');
   }
 
   return {
@@ -110,6 +149,7 @@ export function validateIssueRequest(input) {
       number: String(sale.number),
       subtotal: money(sale.subtotal) || computedTotal,
       discount,
+      discountPercent,
       total,
       paymentMethod: String(sale.paymentMethod || ''),
       completedAt: sale.completedAt || null
