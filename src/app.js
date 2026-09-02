@@ -8,6 +8,7 @@ import { StatusService } from './services/status-service.js';
 import { createBrandingStore } from './services/branding-store.js';
 import { extractPfxCredentials } from './crypto/pfx.js';
 import { prepareCertificationSet, validateCertificationSet, prepareCertificationRcof, previewFolioMapping } from './sii/certification-set.js';
+import { prepareFacturaCertificationSet } from './sii/factura-certification-set.js';
 import { CertificationSubmissionService, certificationRunId } from './services/certification-submission-service.js';
 import { collectStorageDiagnostics, writeStorageProbe } from './lib/storage-diagnostics.js';
 import { SiiAuthClient } from './sii/auth-client.js';
@@ -219,6 +220,12 @@ export function createApp(config) {
           if (caf) mapping = previewFolioMapping(caf);
         } catch { /* CAF inválido: sin mapping preview */ }
         return json(res, 200, { cases, previewMapping: mapping });
+      }
+
+      if (req.method === 'GET' && url.pathname === '/v1/certification/factura/set') {
+        if (!authorized(req, config)) return json(res, 401, { error: 'No autorizado.' });
+        const cases = await prepareFacturaCertificationSet(issueService);
+        return json(res, 200, { cases });
       }
 
       if (req.method === 'POST' && url.pathname === '/v1/certification/set/validate') {
